@@ -77,10 +77,10 @@ make -j$(nproc)
 
 ## 📖 Documentation
 Detailed information is available in the `docs/` directory:
-*   [SNAP Architecture](./docs/SNAP.txt)
-*   [API Reference](./docs/API_REFERENCE.txt)
-*   [OS Tuning Guide](./docs/TUNING.txt) (for sub-100ns latencies)
-*   [Benchmarks Suite](./docs/BENCHMARKS.txt)
+*   [SNAP Architecture](./docs/SNAP.md)
+*   [API Reference](./docs/API_REFERENCE.md)
+*   [OS Tuning Guide](./docs/TUNING.md) (for sub-100ns latencies)
+*   [Benchmarks Suite](./docs/BENCHMARKS.md)
 
 ## ⚖ License
 Snap is released under the **MIT License**.
