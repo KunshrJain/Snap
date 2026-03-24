@@ -1,0 +1,17 @@
+build/
+bin/
+lib/
+*.o
+*.a
+*.so
+.DS_Store
+.vscode/
+.cache/
+.agent/
+snap_demo
+snap_bench
+snap_spsc_test
+snap_mpmc_test
+snap_pool_test
+snap_dispatch_test
+snap_0*

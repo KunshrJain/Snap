@@ -1,0 +1,98 @@
+================================================================================
+SNAP OS TUNING GUIDE — Version 2.0.0
+================================================================================
+
+This guide describes OS-level tuning to achieve hardware-limited latency with Snap.
+These settings are NOT required but can meaningfully reduce tail latency.
+
+────────────────────────────────────────────────────────────────────────────────
+1. CPU ISOLATION
+────────────────────────────────────────────────────────────────────────────────
+Reserve dedicated CPU cores for your Snap threads.
+
+In /etc/default/grub:
+    GRUB_CMDLINE_LINUX="isolcpus=2,3 nohz_full=2,3 rcu_nocbs=2,3"
+
+Then: sudo update-grub && reboot
+
+This prevents the kernel scheduler and RCU callbacks from interrupting your threads.
+Use pin_thread(2) / pin_thread(3) in your code to use isolated cores.
+
+────────────────────────────────────────────────────────────────────────────────
+2. IRQ AFFINITY
+────────────────────────────────────────────────────────────────────────────────
+Pin NIC interrupts AWAY from your Snap cores:
+
+    # List IRQs for your NIC (e.g. eth0)
+    grep eth0 /proc/interrupts | awk '{print $1}' | tr -d ':'
+
+    # Set affinity to CPU 0 only (bitmask 0x1)
+    echo 1 > /proc/irq/<IRQ_NUMBER>/smp_affinity
+
+For Intel NICs with multiple queues, configure RSS to steer all queues to core 0.
+
+────────────────────────────────────────────────────────────────────────────────
+3. HUGEPAGES (2MB)
+────────────────────────────────────────────────────────────────────────────────
+Reduces TLB misses for large shared-memory buffers.
+
+    # Allocate 512 x 2MB hugepages = 1GB
+    echo 512 > /proc/sys/vm/nr_hugepages
+
+    # Persist across reboots (add to /etc/sysctl.conf):
+    vm.nr_hugepages = 512
+
+Then build Snap with: cmake .. -DSNAP_ENABLE_HUGEPAGES=ON
+
+────────────────────────────────────────────────────────────────────────────────
+4. KERNEL TCP/NET TUNING
+────────────────────────────────────────────────────────────────────────────────
+Add to /etc/sysctl.conf and run: sudo sysctl -p
+
+    # Maximize socket buffer headroom
+    net.core.rmem_max = 536870912
+    net.core.wmem_max = 536870912
+    net.core.netdev_max_backlog = 250000
+
+    # Enable TCP Fast Open (for TcpLink)
+    net.ipv4.tcp_fastopen = 3
+
+    # Busy polling (matches Snap's SO_BUSY_POLL=100)
+    net.core.busy_poll = 100
+    net.core.busy_read = 100
+
+    # Disable receive side coalescing (lower latency, higher CPU)
+    # ethtool -C eth0 rx-usecs 0
+
+────────────────────────────────────────────────────────────────────────────────
+5. SCHEDULING POLICY
+────────────────────────────────────────────────────────────────────────────────
+Run your binary with real-time scheduling priority:
+
+    sudo chrt -f 99 ./snap_bench
+
+Or set it programmatically:
+    struct sched_param param = {.sched_priority = 99};
+    pthread_setschedparam(pthread_self(), SCHED_FIFO, &param);
+
+────────────────────────────────────────────────────────────────────────────────
+6. POWER MANAGEMENT
+────────────────────────────────────────────────────────────────────────────────
+Disable CPU frequency scaling (C-states and turbo introduce jitter):
+
+    sudo cpupower frequency-set -g performance
+    echo performance | sudo tee /sys/devices/system/cpu/cpu*/cpufreq/scaling_governor
+
+    # Disable C-states (add to kernel cmdline):
+    processor.max_cstate=1 intel_idle.max_cstate=0
+
+────────────────────────────────────────────────────────────────────────────────
+7. MSG_ZEROCOPY
+────────────────────────────────────────────────────────────────────────────────
+Available on Linux >= 4.14. Eliminates user→kernel copy on UDP/TCP sends.
+Requires the NIC driver to support scatter-gather I/O.
+
+Build: cmake .. -DSNAP_ENABLE_ZEROCOPY=ON
+Check: ethtool -k eth0 | grep scatter-gather   (should be "on")
+
+================================================================================
