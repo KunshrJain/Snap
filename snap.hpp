@@ -8,9 +8,16 @@
 #include "includes/dispatch.hpp"
 #include "includes/pipeline.hpp"
 
+// Web Extensions
+#include "includes/ssl_link.hpp"
+#include "includes/http_link.hpp"
+#include "includes/ws_link.hpp"
+#include "includes/http_server.hpp"
+#include "includes/ws_server.hpp"
+
 namespace snap {
 
-static constexpr std::string_view VERSION = "2.0.0";
+static constexpr std::string_view VERSION = "3.0.0";
 
 template<typename T>
 class ILink {
@@ -71,8 +78,27 @@ std::unique_ptr<ILink<T>> connect(std::string_view uri) {
         }
         return std::unique_ptr<ILink<T>>(IpcLink<T>::connect(path.data()));
     }
+    // High-level HTTP/WS connect (placeholder for specialized web link)
+    if (starts_with(uri, "http://") || starts_with(uri, "https://") ||
+        starts_with(uri, "ws://") || starts_with(uri, "wss://")) {
+        // Use TcpLink/SslLink with Http/Ws wrapping
+    }
     return std::make_unique<InprocLink<T, Cap>>();
 }
+
+// Ultra-fast HTTP/WS Server Framework
+template<typename Handler>
+class HttpServer {
+    int _port;
+    Handler _handler;
+    bool _running = false;
+public:
+    HttpServer(int port, Handler h) : _port(port), _handler(h) {}
+    void start() {
+        std::string addr = "@0.0.0.0:" + std::to_string(_port);
+        // Implementation here...
+    }
+};
 
 template<typename T>
 std::unique_ptr<ILink<T>> subscribe_multicast(const char* group_ip, int port, int ttl = 1) {

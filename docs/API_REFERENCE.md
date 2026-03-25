@@ -1,10 +1,10 @@
 # SNAP API REFERENCE
-**Version 2.0.0**
+**Version 3.0.0**
 
 ## NAMESPACE: `snap`
 
 ### CONSTANTS
-- `snap::VERSION`: `constexpr string_view "2.0.0"`
+- `snap::VERSION`: `constexpr string_view "3.0.0"`
 - `snap::SNAP_CACHE_LINE`: `64` (bytes)
 
 ---
@@ -35,13 +35,52 @@ Factory that returns `std::unique_ptr<ILink<T>>`.
 - `"tcp://@IP:PORT"`: TCP listener (server) — blocks until first client connects
 - `"ipc://PATH"`: AF_UNIX SOCK_SEQPACKET client
 - `"ipc://@PATH"`: AF_UNIX SOCK_SEQPACKET server — blocks until client connects
+- `"http://IP:PORT"`: HTTP 1.1 Connector
+- `"https://IP:PORT"`: Secure HTTPS 1.1
+- `"ws://IP:PORT"`: WebSocket client
+- `"wss://IP:PORT"`: Secure WSS client
 
 ---
 
-## Multicast (snap.hpp)
-- `snap::publish_multicast<T>(group_ip, port, ttl=1)` → `unique_ptr<ILink<T>>`
-- `snap::subscribe_multicast<T>(group_ip, port, ttl=1)` → `unique_ptr<ILink<T>>`
-- UDP multicast PUB/SUB. `group_ip` must be a valid multicast address (224.x.x.x–239.x.x.x).
+## `HttpServer<Handler>` (includes/http_server.hpp)
+Ultra-fast polling HTTP 1.1 reactor.
+
+- `HttpServer(port, handler)`
+- `start(pin_core)`: Starts polling worker on specified core.
+- `stop()`: Halts worker and closes socket.
+
+**Structures:**
+- `HttpRequest`: Contains `method`, `path`, `headers`, `body`.
+- `HttpResponse`: Contains `status`, `headers`, `body`.
+
+---
+
+## `WsServer<Handler>` (includes/ws_server.hpp)
+Ultra-fast WebSocket reactor with AVX2 SIMD acceleration.
+
+- `WsServer(port, handler)`
+- `start(pin_core)`: Starts AVX2 worker reactor.
+- `stop()`: Halts worker.
+
+**Structures:**
+- `WsFrame`: Contains `fin`, `opcode`, `masked`, `payload`, `payload_len`.
+
+---
+
+## `SslLink<T>` (includes/ssl_link.hpp)
+Non-blocking OpenSSL wrapper for encrypted messaging.
+
+- `send(const T& m)` / `recv(T& m)`: Standard messaging.
+- `send_raw(data, len)` / `recv_raw(data, len)`: Byte-level encrypted I/O.
+- `handshake()`: Poll TLS handshake progress.
+
+---
+
+## `SslContext` (includes/ssl_link.hpp)
+OpenSSL context manager.
+
+- `SslContext(is_server)`
+- `load_cert_file(cert_path, key_path)`: Prepare PEM certificates.
 
 ---
 
@@ -57,23 +96,6 @@ LMAX Disruptor-style SPSC lock-free ring buffer.
   - Batch push. Returns number of elements actually pushed.
 - `size_t pop_n(T* out, size_t count) noexcept`
   - Batch pop. Returns number of elements actually popped.
-- `bool empty() const noexcept`
-- `bool full() const noexcept`
-- `size_t size() const noexcept`
-- `size_t capacity() const noexcept`
-
----
-
-## `MpmcQueue<T, Cap>` (includes/mpmc_queue.hpp)
-Bounded MPMC lock-free queue (Rigtorp slot-sequence design).
-Safe for N producers and M consumers simultaneously.
-`Cap` must be a power of 2.
-
-- `bool push(const T& data) noexcept`: Returns `false` if full.
-- `bool pop(T& out) noexcept`: Returns `false` if empty.
-- `bool empty() const noexcept`
-- `size_t size() const noexcept`
-- `static constexpr size_t capacity()`
 
 ---
 
@@ -81,59 +103,33 @@ Safe for N producers and M consumers simultaneously.
 Lock-free slab allocator. Pre-allocates `Slots` objects at construction.
 `Slots` must be a power of 2.
 
-- `T* allocate() noexcept`: Returns `nullptr` if pool exhausted.
-- `void deallocate(T*) noexcept`: Returns slot to pool. Safe to call from any thread.
-- `static constexpr size_t capacity()`
-
-**UseHugePages=true:** maps backing storage with `MAP_HUGETLB + mlock + madvise`.
+- `T* allocate() noexcept`
+- `void deallocate(T*) noexcept`
 
 ---
 
 ## `Dispatcher<MsgType, Handler, Cap=4096>` (includes/dispatch.hpp)
-Zero-allocation pub/sub dispatcher. `Handler` is a template parameter (no `std::function`).
+Zero-allocation pub/sub dispatcher.
 
 - `Dispatcher(Handler h = {})`
 - `void subscribe(Handler h) noexcept`
-- `bool send(const MsgType& msg) noexcept`: thread-safe producer side
-- `void poll() noexcept`: drain up to 1 message
-- `void drain() noexcept`: drain all available
-- `size_t drain_n(size_t max) noexcept`: drain up to `max` messages
-- `bool empty() const noexcept`
-- `size_t size() const noexcept`
-
-`snap::make_dispatcher<MsgType, Cap=4096>(Handler&&)` → `Dispatcher<...>`
-
----
-
-## `Stage<In, Out, Cap=4096>` (includes/pipeline.hpp)
-Pipeline stage: owns inbox (`RingBuffer<In>`) + outbox (`RingBuffer<Out>`) + thread.
-
-- `void start(Fn&& fn, int pin_core = -1)`
-  - Starts worker thread. `fn`: `In → Out` transform.
-- `void stop()`
-  - Signals stop and joins thread.
-
-`SinkStage<T, Cap=4096>` (includes/pipeline.hpp)
-- Same but `fn`: `T → void` (terminal stage, no outbox).
+- `void poll() / drain() / drain_n(max)`
 
 ---
 
 ## UTILITIES (includes/utils.hpp)
 - `void cpu_relax()`: Spin-wait hint (PAUSE/ISB/YIELD)
-- `void spin_wait(int n)`: Call `cpu_relax()` n times
-- `uint64_t timestamp_ns()`: Monotonic wall-clock (ns)
+- `void spin_wait(int n)`
+- `uint64_t timestamp_ns()`
 - `uint64_t rdtsc()`: CPU cycle counter
-- `bool pin_thread(int core_id)`: Set CPU affinity
-- `bool set_thread_name(const char*)`: Set thread name
-- `int numa_node_of_cpu(int cpu_id)`: NUMA node for CPU
+- `bool pin_thread(int core_id)`
+- `bool set_thread_name(const char*)`
+- `int numa_node_of_cpu(int cpu_id)`
 - `bool is_power_of_two(T v)`
 - `bool starts_with(string_view, prefix)`
 
 ### MACROS
-- `SNAP_FORCE_INLINE`: `__attribute__((always_inline)) inline`
-- `SNAP_HOT`: `__attribute__((hot))`
-- `SNAP_COLD`: `__attribute__((cold))`
-- `SNAP_LIKELY(x)` / `SNAP_UNLIKELY(x)`
-- `SNAP_PREFETCH_R(p)` / `SNAP_PREFETCH_W(p)`
-- `SNAP_NODISCARD`: `[[nodiscard]]`
-- `SNAP_RESTRICT`: `__restrict__`
+- `SNAP_FORCE_INLINE`, `SNAP_HOT`, `SNAP_COLD`
+- `SNAP_LIKELY(x)`, `SNAP_UNLIKELY(x)`
+- `SNAP_PREFETCH_R(p)`, `SNAP_PREFETCH_W(p)`
+- `SNAP_NODISCARD`, `SNAP_RESTRICT`
