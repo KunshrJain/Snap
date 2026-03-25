@@ -1,135 +1,105 @@
-# SNAP API REFERENCE
+# 📜 SNAP API REFERENCE
 **Version 3.0.0**
 
 ## NAMESPACE: `snap`
 
 ### CONSTANTS
-- `snap::VERSION`: `constexpr string_view "3.0.0"`
+- `snap::VERSION`: `"3.0.0"`
 - `snap::SNAP_CACHE_LINE`: `64` (bytes)
 
 ---
 
-## `ILink<T>` (snap.hpp)
-Base interface for all links.
+## 🔗 `ILink<T>` (snap.hpp)
+Base interface for all transport links.
 
-- `virtual bool send(const T& m) noexcept = 0`
-  - Send a message. Returns `false` if buffer full (non-blocking).
-- `virtual bool recv(T& m) noexcept = 0`
-  - Receive a message. Returns `false` if no message available (non-blocking).
-
----
-
-## `snap::connect<T, Cap>(uri)` (snap.hpp)
-Factory that returns `std::unique_ptr<ILink<T>>`.
-
-**Template parameters:**
-- `T`: Message type. Must be trivially copyable.
-- `Cap`: Ring buffer capacity. **MUST be a power of 2**. Default = 65536.
-
-**URI schemes:**
-- `"inproc://..."`: Thread-to-thread (`InprocLink<T,Cap>`)
-- `"shm://name"`: Shared memory IPC (`ShmLink<T,Cap>`)
-- `"udp://IP:PORT"`: UDP sender
-- `"udp://@IP:PORT"`: UDP receiver
-- `"tcp://IP:PORT"`: TCP connector (client)
-- `"tcp://@IP:PORT"`: TCP listener (server) — blocks until first client connects
-- `"ipc://PATH"`: AF_UNIX SOCK_SEQPACKET client
-- `"ipc://@PATH"`: AF_UNIX SOCK_SEQPACKET server — blocks until client connects
-- `"http://IP:PORT"`: HTTP 1.1 Connector
-- `"https://IP:PORT"`: Secure HTTPS 1.1
-- `"ws://IP:PORT"`: WebSocket client
-- `"wss://IP:PORT"`: Secure WSS client
+- `virtual bool send(const T& m)`
+  - Push message `m`. Non-blocking. Returns `false` if srv/link is full.
+- `virtual bool recv(T& m)`
+  - Pull message into `m`. Non-blocking. Returns `false` if empty.
 
 ---
 
-## `HttpServer<Handler>` (includes/http_server.hpp)
-Ultra-fast polling HTTP 1.1 reactor.
+## 🏭 `snap::connect<T, Cap>(uri)` (snap.hpp)
+Factory that returns a smart pointer to an `ILink<T>`.
+
+**Template Parameters:**
+- `T`: Message struct. Must be trivially copyable.
+- `Cap`: Buffer capacity (SPSC). **MUST be a power of 2**.
+
+**URI Schemes:**
+- `"inproc://..."`: Internal thread-to-thread piping.
+- `"shm://name"`: Shared memory for inter-process communication (IPC).
+- `"udp://IP:PORT"`: UDP Transmitter.
+- `"udp://@IP:PORT"`: UDP Receiver (Listener).
+- `"tcp://IP:PORT"`: TCP Connector (Client).
+- `"tcp://@IP:PORT"`: TCP Reactor (Server).
+- `"ipc://PATH"`: Unix Domain Socket (Path).
+- `"ipc://@PATH"`: Unix Domain Socket Listener.
+
+---
+
+## 🌐 `HttpServer<Handler>` (includes/http_server.hpp)
+Polling HTTP/1.1 Reactor with zero-allocation parsing.
 
 - `HttpServer(port, handler)`
-- `start(pin_core)`: Starts polling worker on specified core.
-- `stop()`: Halts worker and closes socket.
+- `start(core)`: Starts the reactor on a specific CPU core.
+- `stop()`: Halts the server.
 
 **Structures:**
-- `HttpRequest`: Contains `method`, `path`, `headers`, `body`.
-- `HttpResponse`: Contains `status`, `headers`, `body`.
+- `HttpReq`: Contains `m` (Method), `p` (Path), `hdrs` (Headers), `b` (Body).
+- `HttpRes`: Contains `s` (Status), `b` (Body).
 
 ---
 
-## `WsServer<Handler>` (includes/ws_server.hpp)
-Ultra-fast WebSocket reactor with AVX2 SIMD acceleration.
+## 💬 `WsServer<Handler>` (includes/ws_server.hpp)
+WebSocket Reactor with AVX2-accelerated framing.
 
 - `WsServer(port, handler)`
-- `start(pin_core)`: Starts AVX2 worker reactor.
-- `stop()`: Halts worker.
+- `start(core)`: Starts the worker thread.
+- `stop()`: Halts the server.
 
 **Structures:**
-- `WsFrame`: Contains `fin`, `opcode`, `masked`, `payload`, `payload_len`.
+- `WsFrame`: Contains `op` (Opcode), `pay` (Payload), `len` (Length).
 
 ---
 
-## `SslLink<T>` (includes/ssl_link.hpp)
-Non-blocking OpenSSL wrapper for encrypted messaging.
+## 🔒 `SslLink<T>` (includes/ssl_link.hpp)
+Non-blocking OpenSSL link for encrypted messaging.
 
-- `send(const T& m)` / `recv(T& m)`: Standard messaging.
-- `send_raw(data, len)` / `recv_raw(data, len)`: Byte-level encrypted I/O.
-- `handshake()`: Poll TLS handshake progress.
-
----
-
-## `SslContext` (includes/ssl_link.hpp)
-OpenSSL context manager.
-
-- `SslContext(is_server)`
-- `load_cert_file(cert_path, key_path)`: Prepare PEM certificates.
+- `send(const T& m)` / `recv(T& m)`: Messaging.
+- `send_raw(d, l)` / `recv_raw(d, l)`: Raw byte transfer.
+- `shake()`: Handshake polling.
 
 ---
 
-## `RingBuffer<T, Cap>` (includes/ring_buffer.hpp)
-LMAX Disruptor-style SPSC lock-free ring buffer.
-`Cap` must be a power of 2.
+## 📦 `RingBuffer<T, Cap>` (includes/ring_buffer.hpp)
+LMAX Disruptor-style lock-free ring buffer.
 
-- `bool push(const T& data) noexcept`
-  - Single-producer push. Returns `false` if full.
-- `bool pop(T& out) noexcept`
-  - Single-consumer pop. Returns `false` if empty.
-- `size_t push_n(const T* data, size_t count) noexcept`
-  - Batch push. Returns number of elements actually pushed.
-- `size_t pop_n(T* out, size_t count) noexcept`
-  - Batch pop. Returns number of elements actually popped.
+- `push(const T& d)` / `pop(T& out)`
+- `push_n(data, n)` / `pop_n(out, n)`
+- `full()` / `empty()` / `size()`
 
 ---
 
-## `MemoryPool<T, Slots, UseHugePages=false>` (includes/memory_pool.hpp)
-Lock-free slab allocator. Pre-allocates `Slots` objects at construction.
-`Slots` must be a power of 2.
+## 🏊 `MemoryPool<T, Slots, HugePages>` (includes/memory_pool.hpp)
+Lock-free slab allocator for ultra-fast object recycling.
 
-- `T* allocate() noexcept`
-- `void deallocate(T*) noexcept`
-
----
-
-## `Dispatcher<MsgType, Handler, Cap=4096>` (includes/dispatch.hpp)
-Zero-allocation pub/sub dispatcher.
-
-- `Dispatcher(Handler h = {})`
-- `void subscribe(Handler h) noexcept`
-- `void poll() / drain() / drain_n(max)`
+- `T* alloc()`: Grab an object.
+- `void free(T* p)`: Return to pool.
 
 ---
 
-## UTILITIES (includes/utils.hpp)
-- `void cpu_relax()`: Spin-wait hint (PAUSE/ISB/YIELD)
-- `void spin_wait(int n)`
-- `uint64_t timestamp_ns()`
-- `uint64_t rdtsc()`: CPU cycle counter
-- `bool pin_thread(int core_id)`
-- `bool set_thread_name(const char*)`
-- `int numa_node_of_cpu(int cpu_id)`
-- `bool is_power_of_two(T v)`
-- `bool starts_with(string_view, prefix)`
+## ⚡ UTILITIES (includes/utils.hpp)
+- `relax()`: CPU pause/yield.
+- `spin(n)`: Busy-wait for n cycles.
+- `ts_ns()`: Current monotonic time in nanoseconds.
+- `cycles()`: Raw CPU cycle counter (RDTSC).
+- `pin_thread(core)`: Pin current thread to a CPU core.
 
-### MACROS
-- `SNAP_FORCE_INLINE`, `SNAP_HOT`, `SNAP_COLD`
-- `SNAP_LIKELY(x)`, `SNAP_UNLIKELY(x)`
-- `SNAP_PREFETCH_R(p)`, `SNAP_PREFETCH_W(p)`
-- `SNAP_NODISCARD`, `SNAP_RESTRICT`
+---
+
+### 🛡 Performance Macros
+- `SNAP_HOT`: Mark function for optimization.
+- `SNAP_COLD`: Mark for slow-path.
+- `SNAP_LIKELY(x)` / `SNAP_UNLIKELY(x)`: Branch hints.
+- `SNAP_CACHE_LINE`: 64.

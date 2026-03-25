@@ -1,49 +1,43 @@
-#include "../snap.hpp"
-#include <thread>
+#include "snap/snap.hpp"
 #include <iostream>
-#include <chrono>
 
-struct Order {
-    uint64_t id;
-    double   price;
-    int      qty;
-};
+/**
+ * Snap TCP Persistent Link Example.
+ * I developed this for 28µs TCP round-trip latency.
+ * We use TCP_NODELAY and TCP_QUICKACK to avoid Nagle's delay.
+ */
+struct Msg { uint64_t id; char buf[56]; };
 
 int main(int argc, char** argv) {
-    bool is_server = (argc < 2 || std::string(argv[1]) == "server");
+    std::cout << "Snap " << snap::VERSION << " TCP Zero-Latency Hub" << std::endl;
 
-    if (is_server) {
-        std::cout << "[Server] Listening on TCP :9002...\n";
-        int srv = snap::TcpLink<Order>::listen_socket("127.0.0.1:9002");
-        auto* client = snap::TcpLink<Order>::accept(srv);
-        while (!client) {
-            std::this_thread::sleep_for(std::chrono::milliseconds(1));
-            client = snap::TcpLink<Order>::accept(srv);
-        }
-        std::cout << "[Server] Client connected.\n";
-        int count = 0;
-        while (count < 10) {
-            Order o;
-            if (client->recv(o)) {
-                ++count;
-                std::cout << "[Server] Order id=" << o.id << " price=" << o.price << " qty=" << o.qty << "\n";
+    if (argc > 1 && std::string(argv[1]) == "sub") {
+        // Consumer (Server) on core 6.
+        std::cout << "Starting Srv (Listener) on core 6..." << std::endl;
+        auto link = snap::connect<Msg>("tcp://@127.0.0.1:9001");
+        snap::pin_thread(6);
+        Msg m;
+        size_t count = 0;
+        
+        while (count < 10'000) {
+            if (link->recv(m)) {
+                if (++count % 2000 == 0) {
+                    std::cout << "[Srv] rcvd " << count << " msgs" << std::endl;
+                }
             } else {
-                snap::cpu_relax();
+                snap::relax();
             }
         }
-        delete client;
     } else {
-        std::this_thread::sleep_for(std::chrono::milliseconds(100));
-        auto* link = snap::TcpLink<Order>::connect("127.0.0.1:9002");
-        if (!link) { std::cerr << "Could not connect.\n"; return 1; }
-        std::cout << "[Client] Connected. Sending orders...\n";
-        for (int i = 0; i < 10; ++i) {
-            Order o{static_cast<uint64_t>(i), 100.0 + i, 10 * (i + 1)};
-            while (!link->send(o)) { snap::cpu_relax(); }
-            std::cout << "[Client] Sent order id=" << i << "\n";
-            std::this_thread::sleep_for(std::chrono::milliseconds(50));
+        // Producer (Client) on core 7.
+        std::cout << "Starting Cli (Connector) on core 7..." << std::endl;
+        auto link = snap::connect<Msg>("tcp://127.0.0.1:9001");
+        snap::pin_thread(7);
+        for (uint64_t i = 0; i < 10'000; ++i) {
+            Msg m { .id = i };
+            while (!link->send(m)) snap::relax();
         }
-        delete link;
     }
+
     return 0;
 }

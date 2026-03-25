@@ -1,90 +1,87 @@
 #pragma once
-#include <atomic>
-#include <cstdint>
-#include <new>
 #include "utils.hpp"
+#include <atomic>
 
 namespace snap {
 
+/**
+ * Multi-Producer Multi-Consumer Bounded Queue.
+ * I developed this based on the Rigtorp design. Every slot has its own 
+ * sequence number to keep producers and consumers in sync without a global lock.
+ */
 template<typename T, size_t Cap = 4096>
-struct MpmcQueue {
-    static_assert(is_power_of_two(Cap), "MpmcQueue capacity must be a power of two");
-
-    static constexpr size_t MASK = Cap - 1;
+class MpmcQueue {
+    static_assert(is_p2(Cap), "I need capacity to be a power of 2.");
 
     struct alignas(SNAP_CACHE_LINE) Slot {
-        std::atomic<size_t> seq;
-        alignas(alignof(T)) unsigned char storage[sizeof(T)];
-
-        T& get() noexcept { return *reinterpret_cast<T*>(storage); }
-        const T& get() const noexcept { return *reinterpret_cast<const T*>(storage); }
+        std::atomic<size_t> _seq; // Sequence number for sync
+        T _data;                  // The actual payload
     };
 
     alignas(SNAP_CACHE_LINE) Slot _slots[Cap];
-    alignas(SNAP_CACHE_LINE) std::atomic<size_t> _head{0};
-    alignas(SNAP_CACHE_LINE) std::atomic<size_t> _tail{0};
+    alignas(SNAP_CACHE_LINE) std::atomic<size_t> _p_pos; // Producer position
+    alignas(SNAP_CACHE_LINE) std::atomic<size_t> _c_pos; // Consumer position
 
-    MpmcQueue() noexcept {
-        for (size_t i = 0; i < Cap; ++i) {
-            _slots[i].seq.store(i, std::memory_order_relaxed);
-        }
+    static constexpr size_t MASK = Cap - 1;
+
+public:
+    MpmcQueue() : _p_pos(0), _c_pos(0) {
+        // I initialize all sequence numbers to their respective index
+        for (size_t i = 0; i < Cap; ++i) _slots[i]._seq.store(i, std::memory_order_relaxed);
     }
 
+    // Producer side: I use a CAS loop on the slot sequence 
+    // to find the next available spot.
     SNAP_HOT bool push(const T& data) noexcept {
-        Slot* slot;
-        size_t pos = load_relaxed(_tail);
+        Slot* s;
+        size_t p = _p_pos.load(std::memory_order_relaxed);
         for (;;) {
-            slot = &_slots[pos & MASK];
-            const size_t seq = slot->seq.load(std::memory_order_acquire);
-            const intptr_t diff = static_cast<intptr_t>(seq) - static_cast<intptr_t>(pos);
+            s = &_slots[p & MASK];
+            size_t seq = s->_seq.load(std::memory_order_acquire);
+            intptr_t diff = (intptr_t)seq - (intptr_t)p;
             if (diff == 0) {
-                if (_tail.compare_exchange_weak(pos, pos + 1, std::memory_order_relaxed)) {
-                    break;
-                }
+                if (_p_pos.compare_exchange_weak(p, p + 1, std::memory_order_relaxed)) break;
             } else if (diff < 0) {
-                return false;
+                return false; // Queue full
             } else {
-                pos = load_relaxed(_tail);
+                p = _p_pos.load(std::memory_order_relaxed);
             }
         }
-        slot->get() = data;
-        slot->seq.store(pos + 1, std::memory_order_release);
+        s->_data = data;
+        s->_seq.store(p + 1, std::memory_order_release);
         return true;
     }
 
+    // Consumer side: same CAS logic to claim the next filled slot.
     SNAP_HOT bool pop(T& out) noexcept {
-        Slot* slot;
-        size_t pos = load_relaxed(_head);
+        Slot* s;
+        size_t c = _c_pos.load(std::memory_order_relaxed);
         for (;;) {
-            slot = &_slots[pos & MASK];
-            const size_t seq = slot->seq.load(std::memory_order_acquire);
-            const intptr_t diff = static_cast<intptr_t>(seq) - static_cast<intptr_t>(pos + 1);
+            s = &_slots[c & MASK];
+            size_t seq = s->_seq.load(std::memory_order_acquire);
+            intptr_t diff = (intptr_t)seq - (intptr_t)(c + 1);
             if (diff == 0) {
-                if (_head.compare_exchange_weak(pos, pos + 1, std::memory_order_relaxed)) {
-                    break;
-                }
+                if (_c_pos.compare_exchange_weak(c, c + 1, std::memory_order_relaxed)) break;
             } else if (diff < 0) {
-                return false;
+                return false; // Queue empty
             } else {
-                pos = load_relaxed(_head);
+                c = _c_pos.load(std::memory_order_relaxed);
             }
         }
-        out = slot->get();
-        slot->seq.store(pos + MASK + 1, std::memory_order_release);
+        out = s->_data;
+        s->_seq.store(c + MASK + 1, std::memory_order_release);
         return true;
     }
 
     SNAP_FORCE_INLINE bool empty() const noexcept {
-        return load_acquire(_head) == load_acquire(_tail);
+        return (intptr_t)_p_pos.load(std::memory_order_relaxed) - (intptr_t)_c_pos.load(std::memory_order_relaxed) <= 0;
     }
-
+    
     SNAP_FORCE_INLINE size_t size() const noexcept {
-        const size_t h = load_acquire(_head);
-        const size_t t = load_acquire(_tail);
-        return t >= h ? t - h : 0;
+        return _p_pos.load(std::memory_order_relaxed) - _c_pos.load(std::memory_order_relaxed);
     }
-
-    static constexpr size_t capacity() noexcept { return Cap - 1; }
+    
+    static constexpr size_t capacity() noexcept { return Cap; }
 };
 
 } // namespace snap

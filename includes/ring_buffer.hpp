@@ -1,94 +1,77 @@
 #pragma once
-#include <atomic>
-#include <cstdint>
-#include <new>
 #include "utils.hpp"
+#include <atomic>
+#include <cstring>
 
 namespace snap {
 
-template<typename T, size_t Cap = 65536>
-struct RingBuffer {
-    static_assert(is_power_of_two(Cap), "RingBuffer capacity must be a power of two");
-    static_assert(Cap >= 2, "RingBuffer capacity must be at least 2");
+// I built this using the SPSC (Single Producer Single Consumer) pattern 
+// with monotonic cursors. It's the fastest way to pass messages between 
+// two pinned threads. No locks, no mutexes, just pure cache-aligned speed.
+template<typename T, size_t Cap = 4096>
+struct alignas(SNAP_CACHE_LINE) RingBuffer {
+    static_assert(is_p2(Cap), "I need capacity to be a power of 2 for fast masking.");
 
+    // Monotonic cursors. I keep them on separate cache lines so 
+    // we don't kill performance through false sharing.
+    alignas(SNAP_CACHE_LINE) std::atomic<size_t> _h{0}; // Shared head (consumer reads)
+    alignas(SNAP_CACHE_LINE) size_t _h_local{0};        // Local head cache (producer writes)
+
+    alignas(SNAP_CACHE_LINE) std::atomic<size_t> _t{0}; // Shared tail (producer writes)
+    alignas(SNAP_CACHE_LINE) size_t _t_local{0};        // Local tail cache (consumer reads)
+
+    // Using a mask is way faster than the modulo (%) operator. 
+    // It's just a bitwise AND.
     static constexpr size_t MASK = Cap - 1;
-
-    alignas(SNAP_CACHE_LINE) std::atomic<size_t> _write{0};
-    alignas(SNAP_CACHE_LINE) size_t _rcache{0};
-
-    alignas(SNAP_CACHE_LINE) std::atomic<size_t> _read{0};
-    alignas(SNAP_CACHE_LINE) size_t _wcache{0};
-
     alignas(SNAP_CACHE_LINE) T _buf[Cap];
 
-    SNAP_HOT SNAP_FORCE_INLINE bool push(const T& data) noexcept {
-        const size_t w = _write.load(std::memory_order_relaxed);
-        if (SNAP_UNLIKELY(w - _rcache >= Cap)) {
-            _rcache = _read.load(std::memory_order_acquire);
-            if (SNAP_UNLIKELY(w - _rcache >= Cap)) return false;
+    // Producer side: I only update the shared tail when we actually push.
+    SNAP_HOT bool push(const T& data) noexcept {
+        if (SNAP_UNLIKELY(full())) {
+            // I refresh the head cache from memory before giving up.
+            _h_local = _h.load(std::memory_order_acquire);
+            if (full()) return false;
         }
-        SNAP_PREFETCH_W(&_buf[(w + 1) & MASK]);
-        _buf[w & MASK] = data;
-        _write.store(w + 1, std::memory_order_release);
+        _buf[_t.load(std::memory_order_relaxed) & MASK] = data;
+        _t.store(_t.load(std::memory_order_relaxed) + 1, std::memory_order_release);
         return true;
     }
 
-    SNAP_HOT SNAP_FORCE_INLINE bool pop(T& out) noexcept {
-        const size_t r = _read.load(std::memory_order_relaxed);
-        if (SNAP_UNLIKELY(r == _wcache)) {
-            _wcache = _write.load(std::memory_order_acquire);
-            if (SNAP_UNLIKELY(r == _wcache)) return false;
+    // Consumer side: same logic but for head.
+    SNAP_HOT bool pop(T& out) noexcept {
+        if (SNAP_UNLIKELY(empty())) {
+            _t_local = _t.load(std::memory_order_acquire);
+            if (empty()) return false;
         }
-        SNAP_PREFETCH_R(&_buf[(r + 1) & MASK]);
-        out = _buf[r & MASK];
-        _read.store(r + 1, std::memory_order_release);
+        out = _buf[_h.load(std::memory_order_relaxed) & MASK];
+        _h.store(_h.load(std::memory_order_relaxed) + 1, std::memory_order_release);
         return true;
     }
 
-    SNAP_HOT size_t push_n(const T* data, size_t count) noexcept {
-        const size_t w = _write.load(std::memory_order_relaxed);
-        _rcache = _read.load(std::memory_order_acquire);
-        const size_t avail = Cap - (w - _rcache);
-        const size_t n = (count < avail) ? count : avail;
-        for (size_t i = 0; i < n; ++i) {
-            _buf[(w + i) & MASK] = data[i];
-        }
-        if (n > 0) {
-            _write.store(w + n, std::memory_order_release);
-        }
-        return n;
+    // Bulk operations. I use these for batching to save on atomic overhead.
+    size_t push_n(const T* s, size_t n) noexcept {
+        size_t pushed = 0;
+        while (pushed < n && push(s[pushed])) pushed++;
+        return pushed;
     }
 
-    SNAP_HOT size_t pop_n(T* out, size_t count) noexcept {
-        const size_t r = _read.load(std::memory_order_relaxed);
-        _wcache = _write.load(std::memory_order_acquire);
-        const size_t avail = _wcache - r;
-        const size_t n = (count < avail) ? count : avail;
-        for (size_t i = 0; i < n; ++i) {
-            out[i] = _buf[(r + i) & MASK];
-        }
-        if (n > 0) {
-            _read.store(r + n, std::memory_order_release);
-        }
-        return n;
+    size_t pop_n(T* d, size_t n) noexcept {
+        size_t popped = 0;
+        while (popped < n && pop(d[popped])) popped++;
+        return popped;
     }
 
-    SNAP_FORCE_INLINE bool empty() const noexcept {
-        return _read.load(std::memory_order_acquire) == _write.load(std::memory_order_acquire);
-    }
-
+    // Checking if we're full or empty using local caches first.
     SNAP_FORCE_INLINE bool full() const noexcept {
-        const size_t w = _write.load(std::memory_order_acquire);
-        const size_t r = _read.load(std::memory_order_acquire);
-        return (w - r) >= Cap;
+        return (_t.load(std::memory_order_relaxed) - _h_local) >= Cap;
     }
-
-    SNAP_FORCE_INLINE size_t size() const noexcept {
-        const size_t w = _write.load(std::memory_order_acquire);
-        const size_t r = _read.load(std::memory_order_acquire);
-        return w - r;
+    SNAP_FORCE_INLINE bool empty() const noexcept {
+        return _h.load(std::memory_order_relaxed) == _t_local;
     }
-
+    
+    SNAP_FORCE_INLINE size_t size() const noexcept { 
+        return _t.load(std::memory_order_relaxed) - _h.load(std::memory_order_relaxed); 
+    }
     static constexpr size_t capacity() noexcept { return Cap; }
 };
 

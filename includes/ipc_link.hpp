@@ -1,87 +1,75 @@
 #pragma once
+#include "snap.hpp"
 #include <sys/socket.h>
 #include <sys/un.h>
 #include <fcntl.h>
 #include <unistd.h>
-#include <poll.h>
-#include <cstring>
-#include <cstdio>
-#include <cstdlib>
-#include "utils.hpp"
+#include <string>
 
 namespace snap {
 
+/**
+ * High-Speed Local IPC Link.
+ * I built this using AF_UNIX and SOCK_SEQPACKET. It's more reliable 
+ * than standard pipes and faster than TCP for local process messaging.
+ */
 template<typename T>
-class IpcLink : public ILink<T> {
-    int _fd;
+class IpcLink final : public ILink<T> {
+    int _fd = -1;
     std::string _path;
-    bool _owner;
-
-    static void set_nonblock(int fd) noexcept {
-        int flags = fcntl(fd, F_GETFL, 0);
-        fcntl(fd, F_SETFL, flags | O_NONBLOCK);
-    }
-
-    IpcLink(int fd, std::string path, bool owner)
-        : _fd(fd), _path(std::move(path)), _owner(owner) {}
 
 public:
-    static IpcLink* connect(const char* path) {
-        int fd = socket(AF_UNIX, SOCK_SEQPACKET, 0);
-        if (fd < 0) { perror("snap: ipc socket"); exit(1); }
+    IpcLink(int fd, const char* path) : _fd(fd), _path(path) {
+        // I use non-blocking here as well to match Snap's polling philosophy.
+        int flags = fcntl(_fd, F_GETFL, 0);
+        fcntl(_fd, F_SETFL, flags | O_NONBLOCK);
+    }
 
-        struct sockaddr_un addr{};
-        addr.sun_family = AF_UNIX;
-        strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
+    ~IpcLink() { if (_fd >= 0) close(_fd); }
 
-        bool ready = false;
-        for (int i = 0; i < 500 && !ready; ++i) {
-            if (::connect(fd, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) == 0) {
-                ready = true;
-            } else {
-                cpu_relax();
-                spin_wait(100);
-            }
-        }
-        if (!ready) { perror("snap: ipc connect"); exit(1); }
+    // Direct send. Message-oriented delivery.
+    SNAP_HOT bool send(const T& m) noexcept override {
+        ssize_t n = ::send(_fd, &m, sizeof(T), MSG_NOSIGNAL | MSG_DONTWAIT);
+        return n == sizeof(T);
+    }
 
-        set_nonblock(fd);
-        return new IpcLink(fd, path, false);
+    // Direct recv. Reliable delivery without head-of-line blocking.
+    SNAP_HOT bool recv(T& m) noexcept override {
+        ssize_t n = ::recv(_fd, &m, sizeof(T), MSG_DONTWAIT);
+        return n == sizeof(T);
     }
 
     static int listen_socket(const char* path) {
-        unlink(path);
-        int srv = socket(AF_UNIX, SOCK_SEQPACKET, 0);
-        if (srv < 0) { perror("snap: ipc listen socket"); exit(1); }
+        int fd = socket(AF_UNIX, SOCK_SEQPACKET, 0);
+        if (fd < 0) return -1;
 
-        struct sockaddr_un addr{};
+        sockaddr_un addr;
+        addr.sun_family = AF_UNIX;
+        strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
+        unlink(path);
+
+        if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) return -1;
+        if (listen(fd, 1024) < 0) return -1;
+        return fd;
+    }
+
+    static IpcLink<T>* accept(int srv_fd, const char* path) {
+        int cli_fd = ::accept(srv_fd, nullptr, nullptr);
+        return (cli_fd >= 0) ? new IpcLink<T>(cli_fd, path) : nullptr;
+    }
+
+    static IpcLink<T>* connect(const char* path) {
+        int fd = socket(AF_UNIX, SOCK_SEQPACKET, 0);
+        if (fd < 0) return nullptr;
+
+        sockaddr_un addr;
         addr.sun_family = AF_UNIX;
         strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
 
-        if (bind(srv, reinterpret_cast<struct sockaddr*>(&addr), sizeof(addr)) < 0) {
-            perror("snap: ipc bind"); exit(1);
+        if (::connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
+            close(fd); return nullptr;
         }
-        if (::listen(srv, 16) < 0) { perror("snap: ipc listen"); exit(1); }
-        return srv;
-    }
-
-    static IpcLink* accept(int listen_fd, const char* path) {
-        int fd = ::accept4(listen_fd, nullptr, nullptr, SOCK_NONBLOCK);
-        if (fd < 0) return nullptr;
-        return new IpcLink(fd, path, true);
-    }
-
-    ~IpcLink() override {
-        if (_fd >= 0) close(_fd);
-        if (_owner) unlink(_path.c_str());
-    }
-
-    SNAP_HOT SNAP_FORCE_INLINE bool send(const T& m) noexcept override {
-        return ::send(_fd, &m, sizeof(T), MSG_DONTWAIT | MSG_NOSIGNAL) == sizeof(T);
-    }
-
-    SNAP_HOT SNAP_FORCE_INLINE bool recv(T& m) noexcept override {
-        return ::recv(_fd, &m, sizeof(T), MSG_DONTWAIT) == sizeof(T);
+        return new IpcLink<T>(fd, path);
     }
 };
 

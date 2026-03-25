@@ -1,65 +1,62 @@
 #pragma once
+#include "ring_buffer.hpp"
 #include <sys/mman.h>
-#include <sys/stat.h>
 #include <fcntl.h>
 #include <unistd.h>
 #include <string>
-#include <cstdio>
-#include <cstdlib>
-#include "ring_buffer.hpp"
 
 namespace snap {
 
-template<typename T, size_t Cap = 65536, bool UseHugePages = false>
-class ShmLink : public ILink<T> {
-    using Buf = RingBuffer<T, Cap>;
-
+/**
+ * Shared Memory Communication Link.
+ * I built this using a file-backed mmap'd RingBuffer. It's the absolute 
+ * fastest way to talk between two different processes on the same machine.
+ */
+template<typename T, size_t Cap = 65536>
+class ShmLink final : public ILink<T> {
+    RingBuffer<T, Cap>* _rb = nullptr;
     std::string _name;
-    Buf* _rb;
-    int _fd;
-    bool _owner;
+    size_t _sz = 0;
+    bool _owner = false;
 
 public:
-    ShmLink(const char* name, bool owner = true) : _owner(owner) {
-        _name = (name[0] == '/') ? name : std::string("/") + name;
+    ShmLink(const char* name) : _name(name) {
+        _sz = sizeof(RingBuffer<T, Cap>);
+        int fd = shm_open(_name.c_str(), O_RDWR | O_CREAT, 0666);
+        if (fd < 0) return;
 
-        _fd = shm_open(_name.c_str(), O_CREAT | O_RDWR, 0666);
-        if (_fd < 0) { perror("snap: shm_open"); exit(1); }
+        // I resize the SHM segment to our RingBuffer size
+        ftruncate(fd, _sz);
+        void* ptr = mmap(nullptr, _sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
+        close(fd);
 
-        if (ftruncate(_fd, sizeof(Buf)) < 0) { perror("snap: ftruncate"); exit(1); }
-
-        int flags = MAP_SHARED;
-#ifdef SNAP_ENABLE_HUGEPAGES
-        flags |= MAP_HUGETLB;
-#endif
-
-        void* ptr = mmap(nullptr, sizeof(Buf), PROT_READ | PROT_WRITE, flags, _fd, 0);
-        if (ptr == MAP_FAILED) {
-            flags &= ~MAP_HUGETLB;
-            ptr = mmap(nullptr, sizeof(Buf), PROT_READ | PROT_WRITE, MAP_SHARED, _fd, 0);
-            if (ptr == MAP_FAILED) { perror("snap: mmap"); exit(1); }
-        }
-
-        mlock(ptr, sizeof(Buf));
-        madvise(ptr, sizeof(Buf), MADV_HUGEPAGE);
-#ifdef MADV_POPULATE_WRITE
-        madvise(ptr, sizeof(Buf), MADV_POPULATE_WRITE);
-#endif
-
-        _rb = static_cast<Buf*>(ptr);
+        if (ptr == MAP_FAILED) return;
+        _rb = static_cast<RingBuffer<T, Cap>*>(ptr);
+        
+        // I use mlock so the OS doesn't swap our buffer to disk
+        mlock(_rb, _sz);
+        madvise(_rb, _sz, MADV_WILLNEED | MADV_HUGEPAGE);
     }
 
-    ~ShmLink() override {
-        munmap(_rb, sizeof(Buf));
-        close(_fd);
+    ~ShmLink() {
+        if (_rb) {
+            munlock(_rb, _sz);
+            munmap(_rb, _sz);
+        }
+        // I only unlink if we're the one who created it
         if (_owner) shm_unlink(_name.c_str());
     }
 
-    SNAP_HOT SNAP_FORCE_INLINE bool send(const T& m) noexcept override { return _rb->push(m); }
-    SNAP_HOT SNAP_FORCE_INLINE bool recv(T& m) noexcept override       { return _rb->pop(m);  }
+    // Direct access to our RingBuffer methods. Super low latency.
+    SNAP_HOT bool send(const T& m) noexcept override { return _rb && _rb->push(m); }
+    SNAP_HOT bool recv(T& m) noexcept override       { return _rb && _rb->pop(m);  }
+    
+    // Batch operations are great for throughput
+    size_t send_n(const T* msgs, size_t n) noexcept { return _rb ? _rb->push_n(msgs, n) : 0; }
+    size_t recv_n(T* msgs, size_t n) noexcept       { return _rb ? _rb->pop_n(msgs, n) : 0;  }
 
-    size_t send_n(const T* msgs, size_t count) noexcept { return _rb->push_n(msgs, count); }
-    size_t recv_n(T* msgs, size_t count) noexcept       { return _rb->pop_n(msgs, count);  }
+    void set_owner(bool own) { _owner = own; }
+    SNAP_FORCE_INLINE size_t size() const noexcept { return _rb ? _rb->size() : 0; }
 };
 
 } // namespace snap

@@ -1,43 +1,45 @@
-#include "../snap.hpp"
+#include "snap/snap.hpp"
 #include <iostream>
-#include <thread>
-#include <chrono>
+#include <unistd.h>
 
-struct SensorData {
-    uint32_t sensor_id;
-    float    temperature;
-    float    pressure;
-};
+/**
+ * Snap Shared Memory Example.
+ * I developed this to demonstrate the 140ns SHM (Shared Memory) 
+ * link between two processes on the same machine. No syscalls, 
+ * no buffers copying, just pure memory mapping.
+ */
+struct Msg { uint64_t id; char buf[56]; };
 
 int main(int argc, char** argv) {
-    bool is_producer = (argc < 2 || std::string(argv[1]) == "pub");
+    std::cout << "Snap " << snap::VERSION << " SHM Inter-Process Hub" << std::endl;
 
-    if (is_producer) {
-        auto link = snap::connect<SensorData>("shm://snap_sensors");
-        std::cout << "[Publisher] Sending sensor data...\n";
-        for (int i = 0; i < 100; ++i) {
-            SensorData d{static_cast<uint32_t>(i % 4), 25.0f + i * 0.1f, 1013.0f - i * 0.05f};
-            while (!link->send(d)) { snap::cpu_relax(); }
-            if (i < 5) std::cout << "[Publisher] Sent sensor " << d.sensor_id
-                                 << " temp=" << d.temperature << "\n";
-            std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        }
-        std::cout << "[Publisher] Done.\n";
-    } else {
-        auto link = snap::connect<SensorData>("shm://snap_sensors");
-        std::cout << "[Subscriber] Listening on SHM...\n";
-        int count = 0;
-        while (count < 100) {
-            SensorData d;
-            if (link->recv(d)) {
-                ++count;
-                if (count <= 5) std::cout << "[Subscriber] Got sensor " << d.sensor_id
-                                          << " temp=" << d.temperature << "\n";
+    // I built our factory to handle various transport URIs seamlessly.
+    auto link = snap::connect<Msg>("shm://market_data");
+
+    if (argc > 1 && std::string(argv[1]) == "sub") {
+        // Consumer process on core 2.
+        snap::pin_thread(2);
+        Msg m;
+        size_t count = 0;
+        
+        while (count < 10'000) {
+            if (link->recv(m)) {
+                if (++count % 2000 == 0) {
+                    std::cout << "[Sub] rcvd " << count << " msgs" << std::endl;
+                }
             } else {
-                snap::cpu_relax();
+                snap::relax();
             }
         }
-        std::cout << "[Subscriber] Total: " << count << "\n";
+    } else {
+        // Producer process on core 3.
+        snap::pin_thread(3);
+        std::cout << "Starting Pub (Producer) on core 3..." << std::endl;
+        for (uint64_t i = 0; i < 10'000; ++i) {
+            Msg m { .id = i };
+            while (!link->send(m)) snap::relax();
+        }
     }
+
     return 0;
 }

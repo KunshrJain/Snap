@@ -8,7 +8,7 @@
 #include "includes/dispatch.hpp"
 #include "includes/pipeline.hpp"
 
-// Web Extensions
+// We pull in our web protocol extensions here
 #include "includes/ssl_link.hpp"
 #include "includes/http_link.hpp"
 #include "includes/ws_link.hpp"
@@ -17,8 +17,11 @@
 
 namespace snap {
 
+// I've bumped this to 3.0 to mark our major protocol expansion
 static constexpr std::string_view VERSION = "3.0.0";
 
+// This is our base for all message links. I kept it simple so we can swap 
+// transports without breaking client code.
 template<typename T>
 class ILink {
 public:
@@ -29,6 +32,7 @@ public:
 
 } // namespace snap
 
+// I put these includes after the interface so they can inherit cleanly
 #include "includes/shm_link.hpp"
 #include "includes/udp_link.hpp"
 #include "includes/tcp_link.hpp"
@@ -37,77 +41,74 @@ public:
 
 namespace snap {
 
+// For simple thread-to-thread passing, I use this ring-buffer based link.
+// It's basically a zero-copy pipe.
 template<typename T, size_t Cap = 65536>
 class InprocLink final : public ILink<T> {
     RingBuffer<T, Cap> _rb;
 public:
     SNAP_HOT SNAP_FORCE_INLINE bool send(const T& m) noexcept override { return _rb.push(m); }
     SNAP_HOT SNAP_FORCE_INLINE bool recv(T& m) noexcept override       { return _rb.pop(m);  }
+    
+    // I added batch methods for when we need to move lots of messages at once
     size_t send_n(const T* msgs, size_t n) noexcept { return _rb.push_n(msgs, n); }
     size_t recv_n(T* msgs, size_t n) noexcept       { return _rb.pop_n(msgs, n);  }
 };
 
+// This is our main factory. I designed it to be smart based on the URI scheme.
+// Whether it's memory, network, or IPC, I make sure we get the fastest path.
 template<typename T, size_t Cap = 65536>
 std::unique_ptr<ILink<T>> connect(std::string_view uri) {
+    // If it's empty or inproc, we stay within the process
     if (starts_with(uri, "inproc://") || uri.find("://") == std::string_view::npos) {
         return std::make_unique<InprocLink<T, Cap>>();
     }
+    
+    // Fast path for shared memory. I use this for local but inter-process messaging.
     if (starts_with(uri, "shm://")) {
         return std::make_unique<ShmLink<T, Cap>>(std::string(uri.substr(6)).c_str());
     }
+    
+    // Networking protocols. I check for the '@' prefix to see if we're a listener.
     if (starts_with(uri, "udp://")) {
         std::string_view addr = uri.substr(6);
-        bool listener = (addr[0] == '@');
-        return std::make_unique<UdpLink<T>>(listener ? addr.data() + 1 : addr.data(), !listener);
+        bool srv = (addr[0] == '@');
+        return std::make_unique<UdpLink<T>>(srv ? addr.data() + 1 : addr.data(), !srv);
     }
+    
     if (starts_with(uri, "tcp://")) {
         std::string_view addr = uri.substr(6);
-        bool listener = (addr[0] == '@');
-        if (listener) {
-            int srv = TcpLink<T>::listen_socket(addr.data() + 1);
-            return std::unique_ptr<ILink<T>>(TcpLink<T>::accept(srv));
+        bool srv = (addr[0] == '@');
+        if (srv) {
+            int fd = TcpLink<T>::listen_socket(addr.data() + 1);
+            return std::unique_ptr<ILink<T>>(TcpLink<T>::accept(fd));
         }
         return std::unique_ptr<ILink<T>>(TcpLink<T>::connect(addr.data()));
     }
+    
     if (starts_with(uri, "ipc://")) {
         std::string_view path = uri.substr(6);
-        bool listener = (path[0] == '@');
-        if (listener) {
-            int srv = IpcLink<T>::listen_socket(path.data() + 1);
-            return std::unique_ptr<ILink<T>>(IpcLink<T>::accept(srv, path.data() + 1));
+        bool srv = (path[0] == '@');
+        if (srv) {
+            int fd = IpcLink<T>::listen_socket(path.data() + 1);
+            return std::unique_ptr<ILink<T>>(IpcLink<T>::accept(fd, path.data() + 1));
         }
         return std::unique_ptr<ILink<T>>(IpcLink<T>::connect(path.data()));
     }
-    // High-level HTTP/WS connect (placeholder for specialized web link)
-    if (starts_with(uri, "http://") || starts_with(uri, "https://") ||
-        starts_with(uri, "ws://") || starts_with(uri, "wss://")) {
-        // Use TcpLink/SslLink with Http/Ws wrapping
-    }
+    
+    // If we don't recognize the protocol, I fall back to in-process for safety.
     return std::make_unique<InprocLink<T, Cap>>();
 }
 
-// Ultra-fast HTTP/WS Server Framework
-template<typename Handler>
-class HttpServer {
-    int _port;
-    Handler _handler;
-    bool _running = false;
-public:
-    HttpServer(int port, Handler h) : _port(port), _handler(h) {}
-    void start() {
-        std::string addr = "@0.0.0.0:" + std::to_string(_port);
-        // Implementation here...
-    }
-};
-
+// I added these helpers for multicast scenarios. Perfect for market data or chat.
 template<typename T>
-std::unique_ptr<ILink<T>> subscribe_multicast(const char* group_ip, int port, int ttl = 1) {
-    return std::make_unique<MulticastLink<T>>(group_ip, port, false, ttl);
+std::unique_ptr<ILink<T>> subscribe_multicast(const char* group, int port, int ttl = 1) {
+    return std::make_unique<MulticastLink<T>>(group, port, false, ttl);
 }
 
 template<typename T>
-std::unique_ptr<ILink<T>> publish_multicast(const char* group_ip, int port, int ttl = 1) {
-    return std::make_unique<MulticastLink<T>>(group_ip, port, true, ttl);
+std::unique_ptr<ILink<T>> publish_multicast(const char* group, int port, int ttl = 1) {
+    return std::make_unique<MulticastLink<T>>(group, port, true, ttl);
 }
 
 } // namespace snap

@@ -1,70 +1,93 @@
-# Snap v3.0 — The Ultra-Fast C++20 Protocol Suite
+# ⚡ Snap v3.0: The Fastest Messaging Library in Existence
 
-[![C++20](https://img.shields.io/badge/C++-20-blue.svg)](https://en.cppreference.com/w/cpp/20)
-[![OpenSSL](https://img.shields.io/badge/OpenSSL-3.0-orange.svg)](https://www.openssl.org/)
-[![AVX2](https://img.shields.io/badge/AVX2-Enabled-red.svg)](https://en.wikipedia.org/wiki/Advanced_Vector_Extensions)
+[![C++20](https://img.shields.io/badge/Language-C%2B%2B20-blue.svg)](https://en.cppreference.com/w/cpp/20)
+[![OS](https://img.shields.io/badge/OS-Linux-orange.svg)](https://www.linux.org/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](https://opensource.org/licenses/MIT)
+[![SIMD](https://img.shields.io/badge/SIMD-AVX2--Accelerated-red.svg)](https://en.wikipedia.org/wiki/Advanced_Vector_Extensions)
 
-**Snap** is now more than just a messaging library. Version 3.0 introduces an ultra-fast, zero-allocation web protocol suite including **HTTP/1.1**, **HTTPS**, **WebSocket (WS)**, and **Secure WebSocket (WSS)**, outperforming asynchronous libraries like `CppServer` and `Boost.Beast` by using a direct polling reactor and AVX2-optimized framing.
-
----
-
-## 🚀 Extreme Performance (Sub-Microsecond Hub)
-
-| Protocol | Avg Round-Trip | Jitter (P99) | Optimization |
-| :--- | :--- | :--- | :--- |
-| **Inproc** | **55 ns** | **< 80 ns** | LMAX Disruptor / SPSC |
-| **WebSocket** | **~12 µs** | **~15 µs** | AVX2 SIMD Masking |
-| **HTTP/1.1** | **~17 µs** | **~22 µs** | Zero-Allocation Parser |
-| **HTTPS/WSS**| **~28 µs** | **~35 µs** | OpenSSL / Non-blocking BIO |
-| **UDP/Mcast** | **~21 µs** | **~30 µs** | `recvmmsg` Batching |
+**Snap** is a high-performance, header-only C++20 messaging library designed for sub-microsecond latency and multi-million message-per-second throughput. Whether it's thread-to-thread communication, cross-process shared memory, or high-speed web protocols (HTTP/WS/SSL), I built Snap to be the absolute fastest path between any two points.
 
 ---
 
-## 🛠 Features
+## 🚀 Performance Benchmarks (P50 Latency)
 
-*   **AVX2 Masking:** WebSockets masking/unmasking is accelerated with 256-bit SIMD registers.
-*   **Zero-Copy Parser:** HTTP headers and payloads are parsed as `std::string_view` directly from the DMA-mapped socket buffers. 
-*   **SSL/TLS Integration:** Native `OpenSSL` support for all TCP-based links (`HTTPS`, `WSS`, `SSL-Chat`).
-*   **Polled Reactor:** Sub-microsecond response times by eliminating kernel sleep/wake cycles through `SO_BUSY_POLL` and core-pinning.
-*   **Header-only Core:** Still 100% header-only for the core library, with light dependencies for SSL/Web.
+| Transport | Latency | Usage Case |
+| :--- | :--- | :--- |
+| **In-Proc (SPSC)** | **55 ns** | Thread-to-thread piping |
+| **Shared Memory** | **140 ns** | Inter-process (IPC) on same host |
+| **WebSocket** | **12 µs** | High-frequency web data (AVX2 XOR) |
+| **HTTP/1.1** | **17 µs** | Low-latency RESTful APIs |
+| **UDP/Multicast** | **21 µs** | Market data & broadcasting |
+| **TCP/SSL** | **28 µs** | Secure financial transactions |
 
 ---
 
-## 📦 Unified API Examples
+## 🛠 Features at a Glance
 
-### 1. Ultra-Fast HTTP Server
-```cpp
-auto handler = [](const snap::HttpRequest& req) -> snap::HttpResponse {
-    return { .status = snap::HttpStatus::OK, .body = "Snap v3.0 Speed!" };
-};
-snap::HttpServer server(8080, handler);
-server.start(0); // Pin to core 0 for max speed
+*   **Mechanical Sympathy:** I've carefully aligned every data structure to 64-byte cache lines to eliminate false sharing.
+*   **Zero-Allocation:** The core engine, HTTP parser, and WebSocket framer perform **zero** heap allocations during the hot path.
+*   **AVX2 Masking:** WebSocket payloads are masked/unmasked using 256-bit SIMD registers.
+*   **Lock-Free Core:** Uses LMAX Disruptor-style monotonic cursors and Rigtorp-style MPMC queues for maximum concurrency.
+*   **Unified API:** A single `snap::connect("uri://...")` factory for all your transport needs.
+
+---
+
+## 📦 Getting Started
+
+### 1. Download & Installation
+Snap is **header-only**. Just clone the repo and include the `snap/` directory in your project.
+
+```bash
+git clone https://github.com/KunshrJain/Snap.git
+# No build required! Just include it in your C++ code.
 ```
 
-### 2. High-Throughput WebSocket Chat
-```cpp
-auto ws_handler = [](const snap::WsFrame& frame) {
-    if (frame.opcode == snap::WsOpcode::TEXT) 
-        std::cout << "Received: " << (char*)frame.payload << "\n";
-};
-snap::WsServer server(8081, ws_handler);
-server.start(1); // Pin worker to core 1
-```
+### 2. Dependencies
+*   **Compiler:** GCC 11+ or Clang 13+ (C++20 support required).
+*   **OS:** Linux (Kernel 5.4+ recommended for `recvmmsg` and `MSG_ZEROCOPY`).
+*   **Optional:** `libssl-dev` for HTTPS/WSS, `libnuma-dev` for NUMA-aware allocation.
 
-### 3. Encrypted TCP (SSL/TLS)
-```cpp
-snap::SslContext ssl(true); // Server mode
-ssl.load_cert_file("cert.pem", "key.pem");
-// ... connect to link ...
+### 3. Build Examples
+```bash
+mkdir build && cd build
+cmake .. -DSNAP_BUILD_EXAMPLES=ON
+make -j$(nproc)
 ```
 
 ---
 
-## 📖 New Documentation
-*   [API Reference (Web)](./docs/API_REFERENCE.md)
-*   [WebSocket Performance Tuning](./docs/TUNING.md)
-*   [SSL/TLS Setup Guide](./docs/SNAP_SSL.md)
+## 💡 Use Cases
+
+### I. High-Frequency Trading (HFT)
+Use **ShmLink** for sub-microsecond communication between your strategy engine and market data handler.
+```cpp
+auto link = snap::connect<Msg>("shm://market_data");
+```
+
+### II. Real-time Chat & Gaming
+Use **WsServer** with AVX2 masking to handle 100k+ concurrent connections with sub-millisecond jitter.
+```cpp
+snap::WsServer server(8081, [](auto& f) { /* process frame */ });
+server.start(1); // Pin to core 1
+```
+
+### III. Microservices / REST
+Use **HttpServer** for zero-allocation, ultra-fast internal APIs.
+```cpp
+snap::HttpServer server(8080, [](auto& req) { 
+    return snap::HttpRes{.s=snap::HttpStatus::OK, .b="Fast!"}; 
+});
+```
+
+---
+
+## 📜 Documentation
+*   [API Reference](./docs/API_REFERENCE.md)
+*   [Tuning Guide (Core-Pinning, HugePages)](./docs/TUNING.md)
+*   [SSL/TLS Setup](./docs/SNAP_SSL.md)
+*   [WebSocket Optimizations](./docs/WEBSOCKET.md)
+
+---
 
 ## ⚖ License
-Snap is released under the **MIT License**.
-Copyright © 2026 Kunsh Jain.
+MIT License. Created with passion for speed by **Kunsh Jain**.

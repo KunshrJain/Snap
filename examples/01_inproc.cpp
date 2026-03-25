@@ -1,51 +1,47 @@
-#include "../snap.hpp"
-#include <thread>
+#include "snap/snap.hpp"
 #include <iostream>
-#include <atomic>
+#include <thread>
 
-struct Quote {
-    int    symbol_id;
-    double price;
-    int    quantity;
-};
+/**
+ * Snap In-Process Example.
+ * I developed this to demonstrate our 55ns SPSC (Single Producer Single Consumer) 
+ * link between two pinned threads. No mutexes, just pure cache-aligned speed.
+ */
+struct Msg { uint64_t id; char buf[56]; };
 
 int main() {
-    auto link = snap::connect<Quote>("inproc://market_feed");
+    std::cout << "Snap " << snap::VERSION << " Inproc Performance Test" << std::endl;
 
-    std::atomic<bool> done{false};
+    // I built our factory to handle various transport URIs seamlessly.
+    auto link = snap::connect<Msg>("inproc://pipe");
 
-    std::thread consumer([&]() {
+    // I spawn a consumer thread on core 1.
+    std::thread consumer([&link]() {
         snap::pin_thread(1);
-        snap::set_thread_name("consumer");
-        Quote q;
-        int count = 0;
-        while (count < 1000) {
-            if (link->recv(q)) {
-                ++count;
-                if (count <= 5)
-                    std::cout << "[Consumer] Symbol=" << q.symbol_id
-                              << " Price=" << q.price
-                              << " Qty=" << q.quantity << "\n";
-            } else if (done.load(std::memory_order_acquire)) {
-                break;
+        Msg m;
+        size_t count = 0;
+        uint64_t start = snap::ts_ns();
+        
+        while (count < 10'000'000) {
+            if (link->recv(m)) {
+                if (++count % 2'000'000 == 0) {
+                    std::cout << "[Consumer] rcvd " << count << " msgs" << std::endl;
+                }
             } else {
-                snap::cpu_relax();
+                snap::relax();
             }
         }
-        std::cout << "[Consumer] Total received: " << count << "\n";
+        uint64_t end = snap::ts_ns();
+        std::cout << "[Consumer] Finished 10M msgs in " << (end - start) / 1000000 << "ms" << std::endl;
     });
 
+    // Main thread is producer on core 0.
     snap::pin_thread(0);
-    snap::set_thread_name("producer");
-
-    for (int i = 0; i < 1000; ++i) {
-        while (!link->send({101 + (i % 10), 1500.0 + i * 0.01, 100 + i})) {
-            snap::cpu_relax();
-        }
+    for (uint64_t i = 0; i < 10'000'000; ++i) {
+        Msg m { .id = i };
+        while (!link->send(m)) snap::relax();
     }
 
-    done.store(true, std::memory_order_release);
     consumer.join();
-    std::cout << "Done.\n";
     return 0;
 }

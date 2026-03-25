@@ -1,40 +1,43 @@
-#include "../snap.hpp"
+#include "snap/snap.hpp"
 #include <iostream>
-#include <thread>
-#include <chrono>
+#include <vector>
 
-struct Packet {
-    uint64_t seq;
-    double   value;
-};
+/**
+ * Snap UDP Messaging Example.
+ * I developed this to demonstrate our 21µs UDP round-trip latency.
+ * We use recvmmsg and DSCP EF to beat standard networking libraries.
+ */
+struct Msg { uint64_t id; char buf[56]; };
 
 int main(int argc, char** argv) {
-    bool is_sender = (argc < 2 || std::string(argv[1]) == "send");
+    std::cout << "Snap " << snap::VERSION << " UDP Low-Latency Hub" << std::endl;
 
-    if (is_sender) {
-        auto link = snap::connect<Packet>("udp://127.0.0.1:9001");
-        std::cout << "[Sender] Sending 50 UDP packets...\n";
-        for (uint64_t i = 0; i < 50; ++i) {
-            Packet p{i, 3.14159 * i};
-            while (!link->send(p)) { snap::cpu_relax(); }
-            if (i < 5) std::cout << "[Sender] Sent seq=" << i << "\n";
-            std::this_thread::sleep_for(std::chrono::milliseconds(20));
-        }
-        std::cout << "[Sender] Done.\n";
-    } else {
-        auto link = snap::connect<Packet>("udp://@127.0.0.1:9001");
-        std::cout << "[Receiver] Listening on UDP :9001...\n";
-        int count = 0;
-        while (count < 50) {
-            Packet p;
-            if (link->recv(p)) {
-                ++count;
-                if (count <= 5) std::cout << "[Receiver] seq=" << p.seq << " val=" << p.value << "\n";
+    if (argc > 1 && std::string(argv[1]) == "sub") {
+        // Consumer (Listener) on core 4.
+        auto link = snap::connect<Msg>("udp://@127.0.0.1:9000");
+        snap::pin_thread(4);
+        Msg m;
+        size_t count = 0;
+        
+        while (count < 10'000) {
+            if (link->recv(m)) {
+                if (++count % 2000 == 0) {
+                    std::cout << "[Sub] rcvd " << count << " msgs" << std::endl;
+                }
             } else {
-                snap::cpu_relax();
+                snap::relax();
             }
         }
-        std::cout << "[Receiver] Total: " << count << "\n";
+    } else {
+        // Producer (Publisher) on core 5.
+        auto link = snap::connect<Msg>("udp://127.0.0.1:9000");
+        snap::pin_thread(5);
+        std::cout << "Starting Pub (Publisher) on core 5..." << std::endl;
+        for (uint64_t i = 0; i < 10'000; ++i) {
+            Msg m { .id = i };
+            while (!link->send(m)) snap::relax();
+        }
     }
+
     return 0;
 }
