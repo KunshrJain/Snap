@@ -7,7 +7,7 @@ namespace snap {
 
 template<typename MsgType, typename Handler, size_t Cap = 4096>
 class Dispatcher {
-    static_assert(is_power_of_two(Cap), "Dispatcher capacity must be a power of two");
+    static_assert(is_p2(Cap), "Dispatcher capacity must be a power of two");
 
     RingBuffer<MsgType, Cap> _queue;
     Handler _handler;
