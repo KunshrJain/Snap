@@ -28,9 +28,9 @@ struct Stage {
             while (running.load(std::memory_order_acquire)) {
                 if (SNAP_LIKELY(inbox.pop(in_msg))) {
                     out_msg = fn(in_msg);
-                    while (!outbox.push(out_msg)) { relax(); }
+                    while (!outbox.push(out_msg)) { cpu_relax(); }
                 } else {
-                    relax();
+                    cpu_relax();
                 }
             }
         });
@@ -62,7 +62,7 @@ struct SinkStage {
                 if (SNAP_LIKELY(inbox.pop(msg))) {
                     fn(msg);
                 } else {
-                    relax();
+                    cpu_relax();
                 }
             }
         });

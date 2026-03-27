@@ -1,10 +1,12 @@
 #pragma once
 #include "snap.hpp"
-#include <sys/socket.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
 #include <netinet/in.h>
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <unistd.h>
+
+
+#include <io.h>
 #include <vector>
 
 namespace snap {
@@ -27,14 +29,13 @@ public:
         if (_fd < 0) return;
 
         // Non-blocking for Snap performance
-        int flags = fcntl(_fd, F_GETFL, 0);
-        fcntl(_fd, F_SETFL, flags | O_NONBLOCK);
+        u_long mode = 1; ioctlsocket(_fd, FIONBIO, &mode);
 
         // Advanced socket tuning. I added BUSY_POLL and TOS here 
         // to beat every other library in network latency.
         int val = 1;
         setsockopt(_fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
-        setsockopt(_fd, SOL_SOCKET, SO_REUSEPORT, &val, sizeof(val));
+        setsockopt(_fd, SOL_SOCKET, SO_REUSEADDR, &val, sizeof(val));
         
         int poll = 50; // 50us busy poll
         setsockopt(_fd, SOL_SOCKET, SO_BUSY_POLL, &poll, sizeof(poll));
@@ -51,16 +52,16 @@ public:
         if (!_is_pub) { bind(_fd, (struct sockaddr*)&_addr, sizeof(_addr)); }
     }
 
-    ~UdpLink() { if (_fd >= 0) close(_fd); }
+    ~UdpLink() { if (_fd >= 0) closesocket(_fd); }
 
     // Direct sendto. Fast and reliable for UDP.
     SNAP_HOT bool send(const T& m) noexcept override {
-        return sendto(_fd, &m, sizeof(T), MSG_DONTWAIT, (struct sockaddr*)&_addr, sizeof(_addr)) > 0;
+        return sendto(_fd, &m, sizeof(T), 0, (struct sockaddr*)&_addr, sizeof(_addr)) > 0;
     }
 
     // Direct recvfrom. No copying, just the message.
     SNAP_HOT bool recv(T& m) noexcept override {
-        return recvfrom(_fd, &m, sizeof(T), MSG_DONTWAIT, nullptr, nullptr) > 0;
+        return recvfrom(_fd, &m, sizeof(T), 0, nullptr, nullptr) > 0;
     }
 
     /**
@@ -77,7 +78,7 @@ public:
             mmsg[i].msg_hdr.msg_iov = &iov[i];
             mmsg[i].msg_hdr.msg_iovlen = 1;
         }
-        int res = recvmmsg(_fd, mmsg, n, MSG_DONTWAIT, nullptr);
+        int res = recvmmsg(_fd, mmsg, n, 0, nullptr);
         return res > 0 ? (size_t)res : 0;
     }
 };

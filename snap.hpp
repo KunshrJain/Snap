@@ -8,16 +8,31 @@
 #include "includes/dispatch.hpp"
 #include "includes/pipeline.hpp"
 
-namespace snap {
-    template<typename T> class TcpLink;
-    template<typename T, size_t Cap> class ShmLink;
-    template<typename T> class UdpLink;
-    template<typename T> class IpcLink;
-    template<typename T> class MulticastLink;
-    template<typename T, size_t Cap> class InprocLink;
-}
+// We pull in our web protocol extensions here
+#include "includes/ssl_link.hpp"
+#include "includes/http_link.hpp"
+#include "includes/ws_link.hpp"
+#include "includes/http_server.hpp"
+#include "includes/ws_server.hpp"
+
+#include <winsock2.h>
+#pragma comment(lib, "ws2_32.lib")
 
 namespace snap {
+
+struct WinSockInit {
+    WinSockInit() {
+        WSADATA wsa;
+        WSAStartup(MAKEWORD(2, 2), &wsa);
+    }
+    ~WinSockInit() {
+        WSACleanup();
+    }
+};
+static WinSockInit __winsock_init;
+
+// I've bumped this to 3.0 to mark our major protocol expansion
+static constexpr std::string_view VERSION = "3.0.0";
 
 // This is our base for all message links. I kept it simple so we can swap 
 // transports without breaking client code.
@@ -30,17 +45,6 @@ public:
 };
 
 } // namespace snap
-
-// Moved web protocols to the bottom
-
-namespace snap {
-
-// I've bumped this to 3.0 to mark our major protocol expansion
-static constexpr std::string_view VERSION = "3.0.0";
-
-} // namespace snap
-
-// Moved ILink up
 
 // I put these includes after the interface so they can inherit cleanly
 #include "includes/shm_link.hpp"
@@ -122,10 +126,3 @@ std::unique_ptr<ILink<T>> publish_multicast(const char* group, int port, int ttl
 }
 
 } // namespace snap
-
-// We pull in our web protocol extensions here, after everything else is defined
-#include "includes/ssl_link.hpp"
-#include "includes/http_link.hpp"
-#include "includes/ws_link.hpp"
-#include "includes/http_server.hpp"
-#include "includes/ws_server.hpp"

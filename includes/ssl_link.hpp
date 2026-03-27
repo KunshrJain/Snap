@@ -2,9 +2,11 @@
 #include "snap.hpp"
 #include <openssl/ssl.h>
 #include <openssl/err.h>
-#include <sys/socket.h>
-#include <fcntl.h>
-#include <unistd.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
+
+#include <io.h>
 
 namespace snap {
 
@@ -54,13 +56,12 @@ public:
         if (_srv) SSL_set_accept_state(_ssl);
         else SSL_set_connect_state(_ssl);
         
-        int flags = fcntl(_fd, F_GETFL, 0);
-        fcntl(_fd, F_SETFL, flags | O_NONBLOCK);
+        u_long mode = 1; ioctlsocket(_fd, FIONBIO, &mode);
     }
 
     ~SslLink() {
         if (_ssl) { SSL_shutdown(_ssl); SSL_free(_ssl); }
-        if (_fd >= 0) close(_fd);
+        if (_fd >= 0) closesocket(_fd);
     }
 
     // Encrypted send. Standard Snap ILink compliant.
@@ -89,12 +90,12 @@ public:
     }
 
     // Raw byte I/O for HTTPS/WSS. Super fast.
-    ssize_t send_raw(const void* d, size_t l) {
+    int send_raw(const void* d, size_t l) {
         if (!_shaked) if (!shake()) return -1;
         return SSL_write(_ssl, d, l);
     }
 
-    ssize_t recv_raw(void* d, size_t l) {
+    int recv_raw(void* d, size_t l) {
         if (!_shaked) if (!shake()) return -1;
         return SSL_read(_ssl, d, l);
     }

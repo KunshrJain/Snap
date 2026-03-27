@@ -1,9 +1,11 @@
 #pragma once
-#include <sys/socket.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
 #include <netinet/in.h>
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <unistd.h>
+
+
+#include <io.h>
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
@@ -28,7 +30,7 @@ public:
 
         int opt = 1;
         setsockopt(_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-        setsockopt(_fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
+        setsockopt(_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
         int busy_poll = 100;
         setsockopt(_fd, SOL_SOCKET, SO_BUSY_POLL, &busy_poll, sizeof(busy_poll));
@@ -62,15 +64,15 @@ public:
         fcntl(_fd, F_SETFL, O_NONBLOCK);
     }
 
-    ~MulticastLink() override { close(_fd); }
+    ~MulticastLink() override { closesocket(_fd); }
 
     SNAP_HOT SNAP_FORCE_INLINE bool send(const T& m) noexcept override {
-        return sendto(_fd, &m, sizeof(T), MSG_DONTWAIT,
+        return sendto(_fd, &m, sizeof(T), 0,
                       reinterpret_cast<const struct sockaddr*>(&_group_addr), sizeof(_group_addr)) == sizeof(T);
     }
 
     SNAP_HOT SNAP_FORCE_INLINE bool recv(T& m) noexcept override {
-        return recvfrom(_fd, &m, sizeof(T), MSG_DONTWAIT, nullptr, nullptr) == sizeof(T);
+        return recvfrom(_fd, &m, sizeof(T), 0, nullptr, nullptr) == sizeof(T);
     }
 };
 

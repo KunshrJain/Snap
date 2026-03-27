@@ -1,10 +1,12 @@
 #pragma once
 #include "snap.hpp"
-#include <sys/socket.h>
-#include <netinet/tcp.h>
-#include <arpa/inet.h>
-#include <fcntl.h>
-#include <unistd.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
+
+
+
+#include <io.h>
 #include <string>
 
 namespace snap {
@@ -28,24 +30,22 @@ public:
         setsockopt(_fd, IPPROTO_TCP, TCP_NODELAY, &val, sizeof(val));
         setsockopt(_fd, IPPROTO_TCP, TCP_QUICKACK, &val, sizeof(val));
         
-        int poll = 50; 
-        setsockopt(_fd, SOL_SOCKET, SO_BUSY_POLL, &poll, sizeof(poll));
         
-        int flags = fcntl(_fd, F_GETFL, 0);
-        fcntl(_fd, F_SETFL, flags | O_NONBLOCK);
+        
+        u_long mode = 1; ioctlsocket(_fd, FIONBIO, &mode);
     }
 
-    ~TcpLink() { if (_fd >= 0) close(_fd); }
+    ~TcpLink() { if (_fd >= 0) closesocket(_fd); }
 
     // Direct send. No extra copying.
     SNAP_HOT bool send(const T& m) noexcept override {
-        ssize_t n = ::send(_fd, &m, sizeof(T), MSG_NOSIGNAL | MSG_DONTWAIT);
+        int n = ::send(_fd, &m, sizeof(T), 0);
         return n == sizeof(T);
     }
 
     // Direct recv. Just get the payload.
     SNAP_HOT bool recv(T& m) noexcept override {
-        ssize_t n = ::recv(_fd, &m, sizeof(T), MSG_DONTWAIT);
+        int n = ::recv(_fd, &m, sizeof(T), 0);
         return n == sizeof(T);
     }
 
@@ -56,7 +56,7 @@ public:
 
         int opt = 1;
         setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-        setsockopt(fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
+        setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
 
         std::string s(ip_port);
         size_t colon = s.find(':');
@@ -87,7 +87,7 @@ public:
         inet_pton(AF_INET, s.substr(0, colon).c_str(), &addr.sin_addr);
 
         if (::connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-            close(fd); return nullptr;
+            closesocket(fd); return nullptr;
         }
         return new TcpLink<T>(fd, ip_port);
     }

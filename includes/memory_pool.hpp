@@ -1,7 +1,7 @@
 #pragma once
 #include "utils.hpp"
-#include <sys/mman.h>
-#include <unistd.h>
+#include <windows.h>
+#include <io.h>
 #include <atomic>
 #include <vector>
 
@@ -27,16 +27,11 @@ class MemoryPool {
 public:
     MemoryPool() {
         _sz = Slots * std::max(sizeof(T), sizeof(Node));
-        int flags = MAP_PRIVATE | MAP_ANONYMOUS;
-        if (HugePages) flags |= MAP_HUGETLB;
-
-        // I pre-fault the memory with mlock to avoid any kernel page faults later.
-        _mem = mmap(nullptr, _sz, PROT_READ | PROT_WRITE, flags, -1, 0);
-        if (_mem == MAP_FAILED) {
-            _mem = mmap(nullptr, _sz, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+        // Use VirtualAlloc for memory pool
+        _mem = VirtualAlloc(NULL, _sz, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
+        if (_mem) {
+            VirtualLock(_mem, _sz);
         }
-        mlock(_mem, _sz);
-        madvise(_mem, _sz, MADV_WILLNEED | MADV_HUGEPAGE);
 
         // I build the free-list links initially so we're ready to go.
         uint8_t* p = static_cast<uint8_t*>(_mem);
@@ -49,8 +44,8 @@ public:
 
     ~MemoryPool() {
         if (_mem) {
-            munlock(_mem, _sz);
-            munmap(_mem, _sz);
+            VirtualUnlock(_mem, _sz);
+            VirtualFree(_mem, 0, MEM_RELEASE);
         }
     }
 

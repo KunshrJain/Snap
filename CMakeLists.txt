@@ -33,7 +33,7 @@ find_package(OpenSSL REQUIRED)
 
 add_library(snap INTERFACE)
 target_include_directories(snap INTERFACE ${CMAKE_CURRENT_SOURCE_DIR} ${OPENSSL_INCLUDE_DIR})
-target_link_libraries(snap INTERFACE ${OPENSSL_LIBRARIES} pthread rt numa)
+target_link_libraries(snap INTERFACE ${OPENSSL_LIBRARIES} ws2_32)
 
 if(SNAP_ENABLE_ZEROCOPY)
     target_compile_definitions(snap INTERFACE SNAP_ENABLE_ZEROCOPY)
@@ -42,14 +42,7 @@ if(SNAP_ENABLE_HUGEPAGES)
     target_compile_definitions(snap INTERFACE SNAP_ENABLE_HUGEPAGES)
 endif()
 
-find_library(NUMA_LIB numa)
-if(NUMA_LIB)
-    set(SNAP_LINK_LIBS snap pthread rt ${NUMA_LIB})
-    message(STATUS "libnuma found: ${NUMA_LIB}")
-else()
-    set(SNAP_LINK_LIBS snap pthread rt)
-    message(STATUS "libnuma not found, NUMA features disabled")
-endif()
+set(SNAP_LINK_LIBS snap ws2_32)
 
 
 if(SNAP_BUILD_EXAMPLES)

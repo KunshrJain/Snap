@@ -1,8 +1,8 @@
 #pragma once
 #include "ring_buffer.hpp"
-#include <sys/mman.h>
-#include <fcntl.h>
-#include <unistd.h>
+#include <windows.h>
+
+#include <io.h>
 #include <string>
 
 namespace snap {
@@ -15,6 +15,7 @@ namespace snap {
 template<typename T, size_t Cap = 65536>
 class ShmLink final : public ILink<T> {
     RingBuffer<T, Cap>* _rb = nullptr;
+    HANDLE _hMapFile = NULL;
     std::string _name;
     size_t _sz = 0;
     bool _owner = false;
@@ -22,29 +23,26 @@ class ShmLink final : public ILink<T> {
 public:
     ShmLink(const char* name) : _name(name) {
         _sz = sizeof(RingBuffer<T, Cap>);
-        int fd = shm_open(_name.c_str(), O_RDWR | O_CREAT, 0666);
-        if (fd < 0) return;
+        std::string win_name = "Local\\" + _name; // Windows named mapping
+        _hMapFile = CreateFileMappingA(INVALID_HANDLE_VALUE, NULL, PAGE_READWRITE, 0, static_cast<DWORD>(_sz), win_name.c_str());
+        if (_hMapFile == NULL) return;
 
-        // I resize the SHM segment to our RingBuffer size
-        ftruncate(fd, _sz);
-        void* ptr = mmap(nullptr, _sz, PROT_READ | PROT_WRITE, MAP_SHARED, fd, 0);
-        close(fd);
+        void* ptr = MapViewOfFile(_hMapFile, FILE_MAP_ALL_ACCESS, 0, 0, _sz);
+        if (ptr == NULL) return;
 
-        if (ptr == MAP_FAILED) return;
         _rb = static_cast<RingBuffer<T, Cap>*>(ptr);
-        
-        // I use mlock so the OS doesn't swap our buffer to disk
-        mlock(_rb, _sz);
-        madvise(_rb, _sz, MADV_WILLNEED | MADV_HUGEPAGE);
+        VirtualLock(_rb, _sz);
     }
 
     ~ShmLink() {
         if (_rb) {
-            munlock(_rb, _sz);
-            munmap(_rb, _sz);
+            VirtualUnlock(_rb, _sz);
+            UnmapViewOfFile(_rb);
         }
-        // I only unlink if we're the one who created it
-        if (_owner) shm_unlink(_name.c_str());
+        if (_hMapFile) {
+            CloseHandle(_hMapFile);
+            _hMapFile = NULL;
+        }
     }
 
     // Direct access to our RingBuffer methods. Super low latency.

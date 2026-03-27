@@ -1,9 +1,11 @@
 #pragma once
 #include "snap.hpp"
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <fcntl.h>
-#include <unistd.h>
+#include <winsock2.h>
+#include <ws2tcpip.h>
+#pragma comment(lib, "ws2_32.lib")
+#include <afunix.h>
+
+#include <io.h>
 #include <string>
 
 namespace snap {
@@ -21,32 +23,31 @@ class IpcLink final : public ILink<T> {
 public:
     IpcLink(int fd, const char* path) : _fd(fd), _path(path) {
         // I use non-blocking here as well to match Snap's polling philosophy.
-        int flags = fcntl(_fd, F_GETFL, 0);
-        fcntl(_fd, F_SETFL, flags | O_NONBLOCK);
+        u_long mode = 1; ioctlsocket(_fd, FIONBIO, &mode);
     }
 
-    ~IpcLink() { if (_fd >= 0) close(_fd); }
+    ~IpcLink() { if (_fd >= 0) closesocket(_fd); }
 
     // Direct send. Message-oriented delivery.
     SNAP_HOT bool send(const T& m) noexcept override {
-        ssize_t n = ::send(_fd, &m, sizeof(T), MSG_NOSIGNAL | MSG_DONTWAIT);
+        int n = ::send(_fd, &m, sizeof(T), 0);
         return n == sizeof(T);
     }
 
     // Direct recv. Reliable delivery without head-of-line blocking.
     SNAP_HOT bool recv(T& m) noexcept override {
-        ssize_t n = ::recv(_fd, &m, sizeof(T), MSG_DONTWAIT);
+        int n = ::recv(_fd, &m, sizeof(T), 0);
         return n == sizeof(T);
     }
 
     static int listen_socket(const char* path) {
-        int fd = socket(AF_UNIX, SOCK_SEQPACKET, 0);
+        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
         if (fd < 0) return -1;
 
         sockaddr_un addr;
         addr.sun_family = AF_UNIX;
         strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
-        unlink(path);
+        _unlink(path);
 
         if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) return -1;
         if (listen(fd, 1024) < 0) return -1;
@@ -59,7 +60,7 @@ public:
     }
 
     static IpcLink<T>* connect(const char* path) {
-        int fd = socket(AF_UNIX, SOCK_SEQPACKET, 0);
+        int fd = socket(AF_UNIX, SOCK_STREAM, 0);
         if (fd < 0) return nullptr;
 
         sockaddr_un addr;
@@ -67,7 +68,7 @@ public:
         strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
 
         if (::connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-            close(fd); return nullptr;
+            closesocket(fd); return nullptr;
         }
         return new IpcLink<T>(fd, path);
     }
