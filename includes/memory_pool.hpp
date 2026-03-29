@@ -1,9 +1,15 @@
 #pragma once
 #include "utils.hpp"
-#include <windows.h>
-#include <io.h>
 #include <atomic>
 #include <vector>
+#include <algorithm>
+
+#ifdef _WIN32
+#  include <windows.h>
+#else
+#  include <sys/mman.h>
+#  include <unistd.h>
+#endif
 
 namespace snap {
 
@@ -27,11 +33,17 @@ class MemoryPool {
 public:
     MemoryPool() {
         _sz = Slots * std::max(sizeof(T), sizeof(Node));
-        // Use VirtualAlloc for memory pool
+        
+#ifdef _WIN32
         _mem = VirtualAlloc(NULL, _sz, MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE);
-        if (_mem) {
-            VirtualLock(_mem, _sz);
-        }
+        if (_mem) VirtualLock(_mem, _sz);
+#else
+        _mem = mmap(NULL, _sz, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS | (HugePages ? MAP_HUGETLB : 0), -1, 0);
+        if (_mem == MAP_FAILED) { _mem = nullptr; return; }
+        mlock(_mem, _sz);
+#endif
+
+        if (!_mem) return;
 
         // I build the free-list links initially so we're ready to go.
         uint8_t* p = static_cast<uint8_t*>(_mem);
@@ -44,8 +56,13 @@ public:
 
     ~MemoryPool() {
         if (_mem) {
+#ifdef _WIN32
             VirtualUnlock(_mem, _sz);
             VirtualFree(_mem, 0, MEM_RELEASE);
+#else
+            munlock(_mem, _sz);
+            munmap(_mem, _sz);
+#endif
         }
     }
 
@@ -68,6 +85,10 @@ public:
             n->next.store(h, std::memory_order_relaxed);
         } while (!_head.compare_exchange_weak(h, n, std::memory_order_release, std::memory_order_acquire));
     }
+
+    // I added these for compatibility with generic allocator patterns.
+    T* allocate() noexcept { return alloc(); }
+    void deallocate(T* p) noexcept { free(p); }
 
     static constexpr size_t capacity() noexcept { return Slots; }
 };

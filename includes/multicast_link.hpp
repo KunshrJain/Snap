@@ -1,16 +1,21 @@
-#pragma once
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#pragma comment(lib, "ws2_32.lib")
+#include <sys/socket.h>
 #include <netinet/in.h>
-
-
-#include <io.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <unistd.h>
 #include <cstring>
 #include <cstdio>
 #include <cstdlib>
 #include <string>
 #include "utils.hpp"
+
+#ifdef _WIN32
+#  include <winsock2.h>
+#  include <ws2tcpip.h>
+#  define closesocket_safe(fd) closesocket(fd)
+#else
+#  define closesocket_safe(fd) close(fd)
+#endif
 
 namespace snap {
 
@@ -30,10 +35,14 @@ public:
 
         int opt = 1;
         setsockopt(_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
-        setsockopt(_fd, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt));
+#ifdef SO_REUSEPORT
+        setsockopt(_fd, SOL_SOCKET, SO_REUSEPORT, &opt, sizeof(opt));
+#endif
 
+#ifdef SO_BUSY_POLL
         int busy_poll = 100;
         setsockopt(_fd, SOL_SOCKET, SO_BUSY_POLL, &busy_poll, sizeof(busy_poll));
+#endif
 
         memset(&_group_addr, 0, sizeof(_group_addr));
         _group_addr.sin_family      = AF_INET;
@@ -61,10 +70,15 @@ public:
             }
         }
 
-        fcntl(_fd, F_SETFL, O_NONBLOCK);
+#ifdef _WIN32
+        u_long mode = 1; ioctlsocket(_fd, FIONBIO, &mode);
+#else
+        int flags = fcntl(_fd, F_GETFL, 0);
+        fcntl(_fd, F_SETFL, flags | O_NONBLOCK);
+#endif
     }
 
-    ~MulticastLink() override { closesocket(_fd); }
+    ~MulticastLink() override { closesocket_safe(_fd); }
 
     SNAP_HOT SNAP_FORCE_INLINE bool send(const T& m) noexcept override {
         return sendto(_fd, &m, sizeof(T), 0,
@@ -75,5 +89,4 @@ public:
         return recvfrom(_fd, &m, sizeof(T), 0, nullptr, nullptr) == sizeof(T);
     }
 };
-
 } // namespace snap

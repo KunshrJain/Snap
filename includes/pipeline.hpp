@@ -22,15 +22,15 @@ struct Stage {
     void start(Fn&& fn, int pin_core = -1) {
         running.store(true, std::memory_order_relaxed);
         worker = std::thread([this, fn = std::forward<Fn>(fn), pin_core]() mutable {
-            if (pin_core >= 0) pin_thread(pin_core);
+            if (pin_core >= 0) snap::pin_thread(pin_core);
             In  in_msg;
             Out out_msg;
             while (running.load(std::memory_order_acquire)) {
                 if (SNAP_LIKELY(inbox.pop(in_msg))) {
                     out_msg = fn(in_msg);
-                    while (!outbox.push(out_msg)) { cpu_relax(); }
+                    while (!outbox.push(out_msg)) { snap::cpu_relax(); }
                 } else {
-                    cpu_relax();
+                    snap::cpu_relax();
                 }
             }
         });
@@ -56,13 +56,13 @@ struct SinkStage {
     void start(Fn&& fn, int pin_core = -1) {
         running.store(true, std::memory_order_relaxed);
         worker = std::thread([this, fn = std::forward<Fn>(fn), pin_core]() mutable {
-            if (pin_core >= 0) pin_thread(pin_core);
+            if (pin_core >= 0) snap::pin_thread(pin_core);
             T msg;
             while (running.load(std::memory_order_acquire)) {
                 if (SNAP_LIKELY(inbox.pop(msg))) {
                     fn(msg);
                 } else {
-                    cpu_relax();
+                    snap::cpu_relax();
                 }
             }
         });

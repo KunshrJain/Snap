@@ -15,11 +15,11 @@
 #include "includes/http_server.hpp"
 #include "includes/ws_server.hpp"
 
+#ifdef _WIN32
 #include <winsock2.h>
 #pragma comment(lib, "ws2_32.lib")
 
 namespace snap {
-
 struct WinSockInit {
     WinSockInit() {
         WSADATA wsa;
@@ -30,6 +30,8 @@ struct WinSockInit {
     }
 };
 static WinSockInit __winsock_init;
+} // namespace snap
+#endif
 
 // I've bumped this to 3.0 to mark our major protocol expansion
 static constexpr std::string_view VERSION = "3.0.0";

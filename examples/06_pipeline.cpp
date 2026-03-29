@@ -22,7 +22,7 @@ int main() {
     }, 3);
 
     stage2.start([&](const Spread& s) -> Alert {
-        while (!sink.inbox.push({s.value > 0.5, s.value})) { snap::cpu_relax(); }
+        while (!sink.inbox.push({s.value > 0.5, s.value})) { snap::relax(); }
         return {s.value > 0.5, s.value};
     }, 2);
 
@@ -33,7 +33,7 @@ int main() {
     snap::pin_thread(0);
     for (int i = 0; i < 200; ++i) {
         RawTick tick{100.0 + i * 0.01, 100.1 + i * 0.01 + (i % 7) * 0.1};
-        while (!stage1.inbox.push(tick)) { snap::cpu_relax(); }
+        while (!stage1.inbox.push(tick)) { snap::relax(); }
     }
 
     std::this_thread::sleep_for(std::chrono::milliseconds(200));

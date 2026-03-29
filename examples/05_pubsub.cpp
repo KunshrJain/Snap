@@ -26,8 +26,8 @@ int main() {
     std::thread producer([&]() {
         for (int i = 0; i < 1000; ++i) {
             Event e{i % 5, i * 1.5};
-            while (!disp_a.send(e)) { snap::cpu_relax(); }
-            while (!disp_b.send(e)) { snap::cpu_relax(); }
+            while (!disp_a.send(e)) { snap::relax(); }
+            while (!disp_b.send(e)) { snap::relax(); }
         }
     });
 

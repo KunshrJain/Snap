@@ -45,7 +45,7 @@ void bench_uri(const char* uri, size_t warmup, size_t iterations) {
     std::cout << "[Bench] Starting " << uri << "... " << std::flush;
     
     std::string s_uri(uri);
-    std::unique_ptr<snap::ILink<BenchMsg>> link;
+    std::unique_ptr<snap::ILink<BenchMsg>> target_link;
 
     std::atomic<bool> listener_running{true};
     std::thread listener_thread;
@@ -65,7 +65,7 @@ void bench_uri(const char* uri, size_t warmup, size_t iterations) {
             std::unique_ptr<snap::ILink<BenchMsg>> listener;
             while (listener_running.load(std::memory_order_relaxed) && !listener) {
                 listener = snap::connect<BenchMsg>(listen_uri);
-                if (!listener) snap::cpu_relax();
+                if (!listener) snap::relax();
             }
             if (!listener) return;
             BenchMsg m;
@@ -73,20 +73,20 @@ void bench_uri(const char* uri, size_t warmup, size_t iterations) {
                 if (listener->recv(m)) {
                     while (!listener->send(m)) { 
                       if (!listener_running.load(std::memory_order_relaxed)) return;
-                      snap::cpu_relax(); 
+                      snap::relax(); 
                     }
                 } else {
-                    snap::cpu_relax();
+                    snap::relax();
                 }
             }
         });
         std::this_thread::sleep_for(std::chrono::milliseconds(200));
-        link = snap::connect<BenchMsg>(uri);
+        target_link = snap::connect<BenchMsg>(uri);
     } else {
-        link = snap::connect<BenchMsg>(uri);
+        target_link = snap::connect<BenchMsg>(uri);
     }
 
-    if (!link) {
+    if (!target_link) {
         std::cerr << "FAIL: Could not create link for " << uri << "\n";
         if (listener_thread.joinable()) { listener_running.store(false); listener_thread.join(); }
         return;
@@ -96,25 +96,25 @@ void bench_uri(const char* uri, size_t warmup, size_t iterations) {
     lats.reserve(iterations);
 
     for (size_t i = 0; i < warmup; ++i) {
-        if (link->send({i, 0})) {
+        if (target_link->send({i, 0})) {
             BenchMsg m; 
-            auto start = snap::timestamp_ns();
-            while (!link->recv(m)) { 
-                if (snap::timestamp_ns() - start > 100'000'000) break; // 100ms timeout
-                snap::cpu_relax(); 
+            auto start = snap::ts_ns();
+            while (!target_link->recv(m)) { 
+                if (snap::ts_ns() - start > 100'000'000) break; // 100ms timeout
+                snap::relax(); 
             }
         }
     }
 
     for (size_t i = 0; i < iterations; ++i) {
-        uint64_t t0 = snap::timestamp_ns();
-        while (!link->send({i, t0})) { snap::cpu_relax(); }
+        uint64_t t0 = snap::ts_ns();
+        while (!target_link->send({i, t0})) { snap::relax(); }
         BenchMsg m; 
-        while (!link->recv(m)) { 
-            if (snap::timestamp_ns() - t0 > 100'000'000) break; // timeout
-            snap::cpu_relax(); 
+        while (!target_link->recv(m)) { 
+            if (snap::ts_ns() - t0 > 100'000'000) break; // timeout
+            snap::relax(); 
         }
-        lats.push_back(snap::timestamp_ns() - t0);
+        lats.push_back(snap::ts_ns() - t0);
     }
 
     if (listener_thread.joinable()) {

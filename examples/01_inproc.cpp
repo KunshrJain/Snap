@@ -1,4 +1,4 @@
-#include "snap/snap.hpp"
+#include "../snap.hpp"
 #include <iostream>
 #include <thread>
 

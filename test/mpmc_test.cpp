@@ -21,7 +21,7 @@ int main() {
             snap::pin_thread(p % 4);
             for (size_t i = 0; i < PER_P; ++i) {
                 while (!q.push(static_cast<uint64_t>(p * PER_P + i))) {
-                    snap::cpu_relax();
+                    snap::relax();
                 }
                 sent.fetch_add(1, std::memory_order_relaxed);
             }
@@ -35,7 +35,7 @@ int main() {
                 if (q.pop(v)) {
                     recvd.fetch_add(1, std::memory_order_relaxed);
                 } else {
-                    snap::cpu_relax();
+                    snap::relax();
                 }
             }
         });

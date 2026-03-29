@@ -1,12 +1,19 @@
-#pragma once
 #include "snap.hpp"
 #include <openssl/ssl.h>
 #include <openssl/err.h>
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#pragma comment(lib, "ws2_32.lib")
+#include <sys/socket.h>
+#include <arpa/inet.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
 
-#include <io.h>
+#ifdef _WIN32
+#  include <winsock2.h>
+#  include <ws2tcpip.h>
+#  define closesocket_safe(fd) closesocket(fd)
+#else
+#  define closesocket_safe(fd) close(fd)
+#endif
 
 namespace snap {
 
@@ -39,6 +46,7 @@ struct SslCtx {
 
     ~SslCtx() { if (ctx) SSL_CTX_free(ctx); }
 };
+using SslContext = SslCtx;
 
 template<typename T>
 class SslLink final : public ILink<T> {
@@ -51,33 +59,61 @@ public:
     using msg_t = T;
 
     SslLink(int fd, SSL_CTX* ctx, bool is_srv) : _fd(fd), _srv(is_srv) {
+        if (_fd < 0) return;
         _ssl = SSL_new(ctx);
         SSL_set_fd(_ssl, _fd);
         if (_srv) SSL_set_accept_state(_ssl);
         else SSL_set_connect_state(_ssl);
         
+#ifdef _WIN32
         u_long mode = 1; ioctlsocket(_fd, FIONBIO, &mode);
+#else
+        int flags = fcntl(_fd, F_GETFL, 0);
+        fcntl(_fd, F_SETFL, flags | O_NONBLOCK);
+#endif
     }
 
     ~SslLink() {
         if (_ssl) { SSL_shutdown(_ssl); SSL_free(_ssl); }
-        if (_fd >= 0) closesocket(_fd);
+        if (_fd >= 0) closesocket_safe(_fd);
     }
 
-    // Encrypted send. Standard Snap ILink compliant.
+    // Encrypted send. I ensure the full message reaches the peer.
     SNAP_HOT bool send(const T& m) noexcept override {
         if (!_shaked) if (!shake()) return false;
-        int n = SSL_write(_ssl, &m, sizeof(T));
-        if (n <= 0) return (SSL_get_error(_ssl, n) == SSL_ERROR_WANT_WRITE);
-        return n == sizeof(T);
+        const uint8_t* p = reinterpret_cast<const uint8_t*>(&m);
+        size_t sent = 0;
+        while (sent < sizeof(T)) {
+            int n = SSL_write(_ssl, p + sent, sizeof(T) - sent);
+            if (SNAP_UNLIKELY(n <= 0)) {
+                int err = SSL_get_error(_ssl, n);
+                if (err == SSL_ERROR_WANT_WRITE || err == SSL_ERROR_WANT_READ) { relax(); continue; }
+                return false;
+            }
+            sent += n;
+        }
+        return true;
     }
 
-    // Encrypted recv. Low-latency non-blocking read.
+    // Encrypted recv. I loop until we have a full T block.
+    // I return false only on non-recoverable errors or if no data is available at start.
     SNAP_HOT bool recv(T& m) noexcept override {
         if (!_shaked) if (!shake()) return false;
-        int n = SSL_read(_ssl, &m, sizeof(T));
-        if (n <= 0) return (SSL_get_error(_ssl, n) == SSL_ERROR_WANT_READ);
-        return n == sizeof(T);
+        uint8_t* p = reinterpret_cast<uint8_t*>(&m);
+        size_t recvd = 0;
+        while (recvd < sizeof(T)) {
+            int n = SSL_read(_ssl, p + recvd, sizeof(T) - recvd);
+            if (SNAP_UNLIKELY(n <= 0)) {
+                int err = SSL_get_error(_ssl, n);
+                if (err == SSL_ERROR_WANT_READ || err == SSL_ERROR_WANT_WRITE) {
+                    if (recvd == 0) return false;
+                    relax(); continue;
+                }
+                return false;
+            }
+            recvd += n;
+        }
+        return true;
     }
 
     // TLS Handshake polling. I kept this in the hot path to avoid 

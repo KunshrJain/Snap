@@ -15,7 +15,7 @@ int main() {
         snap::pin_thread(0);
         snap::set_thread_name("spsc_prod");
         for (uint64_t i = 0; i < N; ++i) {
-            while (!rb.push(i)) { snap::cpu_relax(); }
+            while (!rb.push(i)) { snap::relax(); }
             checksum_send.fetch_add(i, std::memory_order_relaxed);
         }
     });
@@ -29,7 +29,7 @@ int main() {
                 checksum_recv.fetch_add(v, std::memory_order_relaxed);
                 recv_count.fetch_add(1, std::memory_order_relaxed);
             } else {
-                snap::cpu_relax();
+                snap::relax();
             }
         }
     });

@@ -26,7 +26,7 @@ int main() {
             for (size_t i = 0; i < n; ++i) batch[i].value = static_cast<int>(sent + i);
             size_t pushed = rb.push_n(batch, n);
             sent += pushed;
-            if (!pushed) snap::cpu_relax();
+            if (!pushed) snap::relax();
         }
     });
 
@@ -36,7 +36,7 @@ int main() {
         while (total_recv.load(std::memory_order_relaxed) < TOTAL_MSG) {
             size_t n = rb.pop_n(out, BATCH_SZ);
             total_recv.fetch_add(n, std::memory_order_relaxed);
-            if (!n) snap::cpu_relax();
+            if (!n) snap::relax();
         }
     });
 

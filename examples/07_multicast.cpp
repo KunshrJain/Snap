@@ -19,7 +19,7 @@ int main(int argc, char** argv) {
         std::cout << "[Publisher] Broadcasting to " << GROUP << ":" << PORT << "\n";
         for (int i = 0; i < 50; ++i) {
             MarketBroadcast msg{static_cast<uint32_t>(i % 10), 100.0 + i};
-            while (!link->send(msg)) { snap::cpu_relax(); }
+            while (!link->send(msg)) { snap::relax(); }
             if (i < 3) std::cout << "[Publisher] sym=" << msg.symbol << " price=" << msg.last_price << "\n";
             std::this_thread::sleep_for(std::chrono::milliseconds(20));
         }
@@ -34,7 +34,7 @@ int main(int argc, char** argv) {
                 ++count;
                 if (count <= 3) std::cout << "[Subscriber] sym=" << msg.symbol << " price=" << msg.last_price << "\n";
             } else {
-                snap::cpu_relax();
+                snap::relax();
             }
         }
         std::cout << "[Subscriber] Total: " << count << "\n";

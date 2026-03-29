@@ -17,7 +17,7 @@ int main() {
             if (link->recv(msg)) {
                 std::cout << "[Engine] Price Received: " << msg.price << std::endl;
             }
-            snap::cpu_relax();
+            snap::relax();
         }
     });
 

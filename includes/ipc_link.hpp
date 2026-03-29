@@ -1,12 +1,17 @@
-#pragma once
-#include "snap.hpp"
-#include <winsock2.h>
-#include <ws2tcpip.h>
-#pragma comment(lib, "ws2_32.lib")
-#include <afunix.h>
-
-#include <io.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <unistd.h>
+#include <fcntl.h>
 #include <string>
+#include <errno.h>
+
+#ifdef _WIN32
+#  include <winsock2.h>
+#  include <ws2tcpip.h>
+#  define closesocket_safe(fd) closesocket(fd)
+#else
+#  define closesocket_safe(fd) close(fd)
+#endif
 
 namespace snap {
 
@@ -22,22 +27,49 @@ class IpcLink final : public ILink<T> {
 
 public:
     IpcLink(int fd, const char* path) : _fd(fd), _path(path) {
+        if (_fd < 0) return;
         // I use non-blocking here as well to match Snap's polling philosophy.
+#ifdef _WIN32
         u_long mode = 1; ioctlsocket(_fd, FIONBIO, &mode);
+#else
+        int flags = fcntl(_fd, F_GETFL, 0);
+        fcntl(_fd, F_SETFL, flags | O_NONBLOCK);
+#endif
     }
 
-    ~IpcLink() { if (_fd >= 0) closesocket(_fd); }
+    ~IpcLink() { if (_fd >= 0) closesocket_safe(_fd); }
 
-    // Direct send. Message-oriented delivery.
+    // Direct send. I ensure the full message is sent over the UNIX socket.
     SNAP_HOT bool send(const T& m) noexcept override {
-        int n = ::send(_fd, &m, sizeof(T), 0);
-        return n == sizeof(T);
+        const uint8_t* p = reinterpret_cast<const uint8_t*>(&m);
+        size_t sent = 0;
+        while (sent < sizeof(T)) {
+            ssize_t n = ::send(_fd, p + sent, sizeof(T) - sent, 0);
+            if (SNAP_UNLIKELY(n <= 0)) {
+                if (errno == EAGAIN || errno == EWOULDBLOCK) { relax(); continue; }
+                return false;
+            }
+            sent += n;
+        }
+        return true;
     }
 
-    // Direct recv. Reliable delivery without head-of-line blocking.
+    // Direct recv. Solid message framing for local IPC.
     SNAP_HOT bool recv(T& m) noexcept override {
-        int n = ::recv(_fd, &m, sizeof(T), 0);
-        return n == sizeof(T);
+        uint8_t* p = reinterpret_cast<uint8_t*>(&m);
+        size_t recvd = 0;
+        while (recvd < sizeof(T)) {
+            ssize_t n = ::recv(_fd, p + recvd, sizeof(T) - recvd, 0);
+            if (SNAP_UNLIKELY(n <= 0)) {
+                if (n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK)) { 
+                    if (recvd == 0) return false;
+                    relax(); continue; 
+                }
+                return false;
+            }
+            recvd += n;
+        }
+        return true;
     }
 
     static int listen_socket(const char* path) {
@@ -47,7 +79,7 @@ public:
         sockaddr_un addr;
         addr.sun_family = AF_UNIX;
         strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
-        _unlink(path);
+        ::unlink(path);
 
         if (bind(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) return -1;
         if (listen(fd, 1024) < 0) return -1;
@@ -68,10 +100,9 @@ public:
         strncpy(addr.sun_path, path, sizeof(addr.sun_path) - 1);
 
         if (::connect(fd, (struct sockaddr*)&addr, sizeof(addr)) < 0) {
-            closesocket(fd); return nullptr;
+            closesocket_safe(fd); return nullptr;
         }
         return new IpcLink<T>(fd, path);
     }
 };
-
 } // namespace snap

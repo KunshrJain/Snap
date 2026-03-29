@@ -16,7 +16,7 @@ int main() {
     std::thread prod([&]() {
         snap::pin_thread(0);
         for (size_t i = 0; i < N; ++i) {
-            while (!disp.send(static_cast<int>(i))) { snap::cpu_relax(); }
+            while (!disp.send(static_cast<int>(i))) { snap::relax(); }
         }
     });
 

@@ -31,6 +31,15 @@ namespace snap {
 // and constexpr improvements for everything to be this fast.
 static_assert(__cplusplus >= 202002L, "Snap requires C++20 or later");
 
+// Low-latency wall-clock. I used CLOCK_MONOTONIC_RAW to avoid 
+// any sudden NTP-driven time jumps during our benchmarks.
+SNAP_FORCE_INLINE uint64_t ts_ns() noexcept {
+    struct timespec ts;
+    clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
+    return (uint64_t)ts.tv_sec * 1'000'000'000ULL + (uint64_t)ts.tv_nsec;
+}
+SNAP_FORCE_INLINE uint64_t timestamp_ns() noexcept { return ts_ns(); }
+
 // Sometimes we just need the CPU to take a breather without giving up its time slice.
 // I've mapped this to the most efficient architecture-specific instructions.
 SNAP_FORCE_INLINE void relax() noexcept {
@@ -46,19 +55,7 @@ SNAP_FORCE_INLINE void relax() noexcept {
     asm volatile("" ::: "memory");
 #endif
 }
-
-// I use this in our spinning loops (like RingBuffer polling).
-SNAP_FORCE_INLINE void spin(int count) noexcept {
-    for (int i = 0; i < count; ++i) relax();
-}
-
-// Low-latency wall-clock. I used CLOCK_MONOTONIC_RAW to avoid 
-// any sudden NTP-driven time jumps during our benchmarks.
-SNAP_FORCE_INLINE uint64_t ts_ns() noexcept {
-    struct timespec ts;
-    clock_gettime(CLOCK_MONOTONIC_RAW, &ts);
-    return (uint64_t)ts.tv_sec * 1'000'000'000ULL + (uint64_t)ts.tv_nsec;
-}
+SNAP_FORCE_INLINE void cpu_relax() noexcept { relax(); }
 
 // CPU cycle counter. I recommend using this for hyper-granular profiling.
 SNAP_FORCE_INLINE uint64_t cycles() noexcept {
